@@ -39,11 +39,15 @@ func parseFetchFilter(filter packp.Filter) (*uint64, error) {
 	if shift != 0 {
 		value = value[:len(value)-1]
 	}
-	// ParseUint accepts a leading '+', which is not part of this wire grammar.
-	if value == "" || value[0] < '0' || value[0] > '9' {
-		return nil, fmt.Errorf("invalid fetch filter: %q", filter)
+	// Match Git's strtoumax base-zero syntax, without Go-only prefixes or separators.
+	value = strings.TrimPrefix(strings.TrimLeft(value, " \t\n\r\v\f"), "+")
+	base := 10
+	if strings.HasPrefix(value, "0x") || strings.HasPrefix(value, "0X") {
+		base, value = 16, value[2:]
+	} else if strings.HasPrefix(value, "0") {
+		base = 8
 	}
-	limit, err := strconv.ParseUint(value, 10, 64)
+	limit, err := strconv.ParseUint(value, base, 64)
 	if err != nil || limit > math.MaxUint64>>shift {
 		return nil, fmt.Errorf("invalid fetch filter: %q", filter)
 	}

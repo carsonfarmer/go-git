@@ -40,9 +40,12 @@ func TestUploadPackV2BlobFilters(t *testing.T) {
 			}
 			small := put(plumbing.BlobObject, "123")
 			boundary := put(plumbing.BlobObject, "1234")
+			nine := put(plumbing.BlobObject, "123456789")
 			treeObj := st.NewEncodedObject()
 			require.NoError(t, (&object.Tree{Entries: []object.TreeEntry{
-				{Name: "a", Mode: filemode.Regular, Hash: small}, {Name: "b", Mode: filemode.Regular, Hash: boundary},
+				{Name: "a", Mode: filemode.Regular, Hash: small},
+				{Name: "b", Mode: filemode.Regular, Hash: boundary},
+				{Name: "c", Mode: filemode.Regular, Hash: nine},
 			}}).Encode(treeObj))
 			tree, err := st.SetEncodedObject(treeObj)
 			require.NoError(t, err)
@@ -64,14 +67,14 @@ func TestUploadPackV2BlobFilters(t *testing.T) {
 				filter string
 				blobs  int
 			}{
-				{"blob:none", 0}, {"blob:limit=0", 0}, {"blob:limit=4", 1}, {"blob:limit=5", 2}, {"blob:limit=1k", 2},
+				{"blob:none", 0}, {"blob:limit=0", 0}, {"blob:limit=04", 1}, {"blob:limit=0x4", 1}, {"blob:limit=+4", 1}, {"blob:limit=4", 1}, {"blob:limit=5", 2}, {"blob:limit=1k", 3}, {"blob:limit=010", 2}, {"blob:limit=0x10", 3},
 			} {
 				t.Run(tc.filter, func(t *testing.T) {
 					t.Parallel()
 					dst, _ := fetch(t, "want "+tip.String(), "filter "+tc.filter, "include-tag", "done")
 					require.Len(t, dst.Blobs, tc.blobs)
 					require.Len(t, dst.Commits, 2)
-					if tc.blobs == 2 {
+					if tc.blobs >= 2 {
 						require.Len(t, dst.Tags, 1)
 					} else {
 						require.Empty(t, dst.Tags)
@@ -118,7 +121,7 @@ func TestUploadPackV2BlobFilters(t *testing.T) {
 
 func TestUploadPackV2InvalidFilters(t *testing.T) {
 	t.Parallel()
-	for _, filter := range []string{"tree:0", "combine:blob:none", "blob:limit=", "blob:limit=-1", "blob:limit=+1", "blob:limit=18446744073709551616", "blob:limit=18014398509481984k", "blob:limit=1x", "blob:limit=1.5k", ""} {
+	for _, filter := range []string{"tree:0", "combine:blob:none", "blob:limit=", "blob:limit=-1", "blob:limit=08", "blob:limit=0b10", "blob:limit=0o10", "blob:limit=1_0", "blob:limit=18446744073709551616", "blob:limit=18014398509481984k", "blob:limit=1x", "blob:limit=1.5k", ""} {
 		t.Run(filter, func(t *testing.T) {
 			t.Parallel()
 			var out bytes.Buffer
@@ -139,7 +142,7 @@ func TestFetchFilterUnits(t *testing.T) {
 		value string
 		limit uint64
 	}{
-		{"1k", 1024}, {"1K", 1024}, {"2m", 2 << 20}, {"2M", 2 << 20}, {"3g", 3 << 30}, {"3G", 3 << 30}, {"18446744073709551615", ^uint64(0)},
+		{"010", 8}, {"0x10", 16}, {"0X10", 16}, {"+1", 1}, {"+010", 8}, {" 0x10", 16}, {"0x10k", 16384}, {"0", 0}, {"1k", 1024}, {"1K", 1024}, {"2m", 2 << 20}, {"2M", 2 << 20}, {"3g", 3 << 30}, {"3G", 3 << 30}, {"18446744073709551615", ^uint64(0)},
 	} {
 		n, err := parseFetchFilter(packp.Filter("blob:limit=" + tc.value))
 		require.NoError(t, err)

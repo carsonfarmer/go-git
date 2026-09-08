@@ -1916,7 +1916,18 @@ func (s *RepositorySuite) TestFetchWithFilters() {
 	err = r.Fetch(&FetchOptions{
 		Filter: packp.FilterBlobNone(),
 	})
-	s.ErrorIs(err, transport.ErrFilterNotSupported)
+	s.NoError(err)
+	blobs, err := r.BlobObjects()
+	s.Require().NoError(err)
+	defer blobs.Close()
+	_, err = blobs.Next()
+	s.ErrorIs(err, io.EOF)
+	_, err = r.Reference("refs/remotes/origin/master", true)
+	s.NoError(err)
+	cfg, err := r.Config()
+	s.Require().NoError(err)
+	s.True(cfg.Remotes[DefaultRemoteName].Promisor)
+	s.Equal("blob:none", cfg.Remotes[DefaultRemoteName].PartialCloneFilter)
 }
 
 func (s *RepositorySuite) TestFetchWithFiltersReal() {
