@@ -95,7 +95,7 @@ func (w *objectWalk) seedWants(wants []plumbing.Hash) error {
 			if err != nil {
 				return fmt.Errorf("getting tree %s: %w", h, err)
 			}
-			if err := collectAllTreeObjects(w.s, t, w.seen, &w.result); err != nil {
+			if err := w.collectAllTreeObjects(t); err != nil {
 				return err
 			}
 		case plumbing.BlobObject:
@@ -316,7 +316,7 @@ func (w *objectWalk) walkFull() error {
 			return fmt.Errorf("getting tree for %s: %w", lc.Hash, err)
 		}
 
-		if err := collectAllTreeObjects(w.s, tree, w.seen, &w.result); err != nil {
+		if err := w.collectAllTreeObjects(tree); err != nil {
 			return fmt.Errorf("collecting tree objects for %s: %w", lc.Hash, err)
 		}
 
@@ -368,7 +368,7 @@ func (w *objectWalk) processCommitTrees(lc *object.Commit) error {
 		oldTrees = append(oldTrees, pt)
 	}
 
-	if err := collectChangedTreeObjects(w.s, newTree, oldTrees, w.seen, &w.result); err != nil {
+	if err := w.collectChangedTreeObjects(newTree, oldTrees); err != nil {
 		return fmt.Errorf("diffing trees for %s: %w", lc.Hash, err)
 	}
 
@@ -390,13 +390,7 @@ func insertSorted(q *[]*object.Commit, c *object.Commit) {
 // all oldTrees. An entry is considered unchanged if any old tree contains the
 // same name with the same hash. Only new or modified tree and blob hashes are
 // added to result.
-func collectChangedTreeObjects(
-	s storer.EncodedObjectStorer,
-	newTree *object.Tree,
-	oldTrees []*object.Tree,
-	seen map[plumbing.Hash]struct{},
-	result *[]plumbing.Hash,
-) error {
+func (w *objectWalk) collectChangedTreeObjects(newTree *object.Tree, oldTrees []*object.Tree) error {
 	// If newTree matches any old tree exactly, nothing changed.
 	for _, ot := range oldTrees {
 		if newTree.Hash == ot.Hash {
@@ -404,9 +398,9 @@ func collectChangedTreeObjects(
 		}
 	}
 
-	if _, ok := seen[newTree.Hash]; !ok {
-		seen[newTree.Hash] = struct{}{}
-		*result = append(*result, newTree.Hash)
+	if _, ok := w.seen[newTree.Hash]; !ok {
+		w.seen[newTree.Hash] = struct{}{}
+		w.result = append(w.result, newTree.Hash)
 	}
 
 	// Build per-parent entry indexes for O(1) lookup.
@@ -424,7 +418,7 @@ func collectChangedTreeObjects(
 		// to the result, but a prior diff-walk may not have collected all
 		// of its children. The recursive call handles dedup for trees.
 		if e.Mode != filemode.Dir {
-			if _, ok := seen[e.Hash]; ok {
+			if _, ok := w.seen[e.Hash]; ok {
 				continue
 			}
 		}
@@ -447,24 +441,24 @@ func collectChangedTreeObjects(
 		if e.Mode == filemode.Dir {
 			// Recurse into changed subtree. Collect the old versions of
 			// this subtree from all parents that have it.
-			newSub, err := object.GetTree(s, e.Hash)
+			newSub, err := object.GetTree(w.s, e.Hash)
 			if err != nil {
 				return fmt.Errorf("getting subtree %s: %w", e.Hash, err)
 			}
 			var oldSubs []*object.Tree
 			for _, m := range oldEntryMaps {
 				if oh, ok := m[e.Name]; ok {
-					if ot, err := object.GetTree(s, oh); err == nil {
+					if ot, err := object.GetTree(w.s, oh); err == nil {
 						oldSubs = append(oldSubs, ot)
 					}
 				}
 			}
-			if err := collectChangedTreeObjects(s, newSub, oldSubs, seen, result); err != nil {
+			if err := w.collectChangedTreeObjects(newSub, oldSubs); err != nil {
 				return err
 			}
 		} else {
-			seen[e.Hash] = struct{}{}
-			*result = append(*result, e.Hash)
+			w.seen[e.Hash] = struct{}{}
+			w.result = append(w.result, e.Hash)
 		}
 	}
 
@@ -474,36 +468,31 @@ func collectChangedTreeObjects(
 // collectAllTreeObjects recursively walks a tree, adding all unseen
 // tree and blob hashes to result. This is faster than collectChangedTreeObjects
 // when we need all objects (no haves to diff against).
-func collectAllTreeObjects(
-	s storer.EncodedObjectStorer,
-	t *object.Tree,
-	seen map[plumbing.Hash]struct{},
-	result *[]plumbing.Hash,
-) error {
-	if _, ok := seen[t.Hash]; ok {
+func (w *objectWalk) collectAllTreeObjects(t *object.Tree) error {
+	if _, ok := w.seen[t.Hash]; ok {
 		return nil
 	}
-	seen[t.Hash] = struct{}{}
-	*result = append(*result, t.Hash)
+	w.seen[t.Hash] = struct{}{}
+	w.result = append(w.result, t.Hash)
 
 	for _, e := range t.Entries {
 		if e.Mode == filemode.Submodule {
 			continue
 		}
-		if _, ok := seen[e.Hash]; ok {
+		if _, ok := w.seen[e.Hash]; ok {
 			continue
 		}
 		if e.Mode == filemode.Dir {
-			sub, err := object.GetTree(s, e.Hash)
+			sub, err := object.GetTree(w.s, e.Hash)
 			if err != nil {
 				return fmt.Errorf("getting subtree %s: %w", e.Hash, err)
 			}
-			if err := collectAllTreeObjects(s, sub, seen, result); err != nil {
+			if err := w.collectAllTreeObjects(sub); err != nil {
 				return err
 			}
 		} else {
-			seen[e.Hash] = struct{}{}
-			*result = append(*result, e.Hash)
+			w.seen[e.Hash] = struct{}{}
+			w.result = append(w.result, e.Hash)
 		}
 	}
 	return nil
