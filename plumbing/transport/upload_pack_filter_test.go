@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"strings"
 	"testing"
 
@@ -17,7 +16,6 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/protocol/packp"
 	"github.com/go-git/go-git/v6/plumbing/protocol/packp/sideband"
-	"github.com/go-git/go-git/v6/storage"
 	"github.com/go-git/go-git/v6/storage/memory"
 	"github.com/go-git/go-git/v6/utils/ioutil"
 )
@@ -89,6 +87,9 @@ func TestUploadPackV2BlobFilters(t *testing.T) {
 				if have != "" {
 					args = append(args, have)
 				}
+				if have != "" {
+					args = append(args, "shallow "+tip.String())
+				}
 				tagPack, _ := fetch(t, args...)
 				for _, h := range []plumbing.Hash{nested, tag, boundary} {
 					require.NoError(t, tagPack.HasEncodedObject(h))
@@ -144,36 +145,4 @@ func TestFetchFilterUnits(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, tc.limit, *n)
 	}
-}
-
-// Metadata reads must not open blob contents merely to decide to omit them.
-type metadataOnlyObject struct{ plumbing.EncodedObject }
-
-func (o metadataOnlyObject) Reader() (io.ReadCloser, error) {
-	return nil, fmt.Errorf("unexpected body read")
-}
-
-type metadataOnlyStorage struct{ storage.Storer }
-
-func (s metadataOnlyStorage) EncodedObject(kind plumbing.ObjectType, h plumbing.Hash) (plumbing.EncodedObject, error) {
-	o, err := s.Storer.EncodedObject(kind, h)
-	return metadataOnlyObject{o}, err
-}
-
-func TestFetchFilterUsesMetadataOnly(t *testing.T) {
-	t.Parallel()
-	st := memory.NewStorage()
-	o := st.NewEncodedObject()
-	o.SetType(plumbing.BlobObject)
-	w, err := o.Writer()
-	require.NoError(t, err)
-	_, err = w.Write([]byte("blob"))
-	require.NoError(t, err)
-	require.NoError(t, w.Close())
-	h, err := st.SetEncodedObject(o)
-	require.NoError(t, err)
-	limit := uint64(4)
-	kept, err := filterFetchObjects(metadataOnlyStorage{st}, []plumbing.Hash{h}, nil, &limit)
-	require.NoError(t, err)
-	require.Empty(t, kept)
 }

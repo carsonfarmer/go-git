@@ -764,6 +764,7 @@ func serveFetchV2(_ context.Context, st storage.Storer, w io.WriteCloser, args *
 		}
 	}
 
+	selection := revlist.ObjectsOptions{BlobLimit: blobLimit, IncludeWants: true}
 	var objs []plumbing.Hash
 	if len(clientShallows) > 0 {
 		// The client already has a shallow view (it sent "shallow" lines).
@@ -783,7 +784,7 @@ func serveFetchV2(_ context.Context, st storage.Storer, w io.WriteCloser, args *
 			// full history grafts nothing and unshallows the old boundary.
 			boundary = newBoundary
 		}
-		newView, nerr := objectsToUpload(&shallowBoundaryStorer{Storer: st, boundary: boundary}, wants, nil)
+		newView, nerr := revlist.ObjectsWithOptions(&shallowBoundaryStorer{Storer: st, boundary: boundary}, wants, nil, selection)
 		if nerr != nil {
 			_ = w.Close()
 			return true, fmt.Errorf("getting objects to upload: %w", nerr)
@@ -793,7 +794,11 @@ func serveFetchV2(_ context.Context, st storage.Storer, w io.WriteCloser, args *
 			_ = w.Close()
 			return true, fmt.Errorf("getting client objects: %w", cerr)
 		}
-		objs = hashDifference(newView, clientView)
+		explicit, err := explicitFetchWants(st, wants)
+		if err != nil {
+			return true, err
+		}
+		objs = hashDifference(newView, clientView, explicit)
 		if haveNewBoundary {
 			out.ShallowInfo = &packp.ShallowInfo{
 				Shallows:   newBoundary,
@@ -806,18 +811,11 @@ func serveFetchV2(_ context.Context, st storage.Storer, w io.WriteCloser, args *
 			out.ShallowInfo = &packp.ShallowInfo{Shallows: newBoundary}
 			packSt = &shallowBoundaryStorer{Storer: st, boundary: newBoundary}
 		}
-		objs, err = objectsToUpload(packSt, wants, haves)
+		objs, err = revlist.ObjectsWithOptions(packSt, wants, haves, selection)
 		if err != nil {
 			_ = w.Close()
 			return true, fmt.Errorf("getting objects to upload: %w", err)
 		}
-	}
-
-	// A promisor client can explicitly request a blob beneath a common have.
-	// Reachability alone cannot establish that it already has that object.
-	objs, err = filterFetchObjects(st, objs, wants, blobLimit)
-	if err != nil {
-		return true, err
 	}
 
 	// include-tag: add annotated tags whose target is in the pack (auto-tag
@@ -867,10 +865,15 @@ func serveFetchV2(_ context.Context, st storage.Storer, w io.WriteCloser, args *
 // hashDifference returns the elements of a that are not in b, preserving a's
 // order. It computes the objects a deepened client is missing (newView minus the
 // client's existing view).
-func hashDifference(a, b []plumbing.Hash) []plumbing.Hash {
+func hashDifference(a, b []plumbing.Hash, keep ...[]plumbing.Hash) []plumbing.Hash {
 	set := make(map[plumbing.Hash]struct{}, len(b))
 	for _, h := range b {
 		set[h] = struct{}{}
+	}
+	for _, hashes := range keep {
+		for _, h := range hashes {
+			delete(set, h)
+		}
 	}
 	var out []plumbing.Hash
 	for _, h := range a {

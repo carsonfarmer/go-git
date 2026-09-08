@@ -24,13 +24,39 @@ func Objects(
 	wants,
 	haves []plumbing.Hash,
 ) ([]plumbing.Hash, error) {
-	if walker, ok := s.(objectWalker); ok {
-		return walker.RevListObjects(wants, haves)
-	}
+	return ObjectsWithOptions(s, wants, haves, ObjectsOptions{})
+}
 
+// ObjectsOptions controls object selection without changing the commit walk.
+type ObjectsOptions struct {
+	// BlobLimit omits indirect blobs of this size or larger. Nil keeps all
+	// blobs; zero omits them without opening their metadata or contents.
+	BlobLimit *uint64
+	// IncludeWants keeps explicitly requested objects, including annotated
+	// tag targets, even when reachable from haves (for promisor clients).
+	IncludeWants bool
+}
+
+// ObjectsWithOptions applies selection during the built-in object walk.
+// Unlike Objects, nonzero options do not use a storer's specialized walker.
+// Zero options preserve Objects behavior, including its specialized walker.
+func ObjectsWithOptions(
+	s storer.EncodedObjectStorer,
+	wants, haves []plumbing.Hash,
+	opts ObjectsOptions,
+) ([]plumbing.Hash, error) {
+	if opts.BlobLimit == nil && !opts.IncludeWants {
+		if walker, ok := s.(objectWalker); ok {
+			return walker.RevListObjects(wants, haves)
+		}
+	}
 	w, err := newObjectWalk(s)
 	if err != nil {
 		return nil, err
+	}
+	w.blobLimit = opts.BlobLimit
+	if opts.IncludeWants {
+		w.explicit = make(map[plumbing.Hash]bool, len(wants))
 	}
 	if err := w.seedHaves(haves); err != nil {
 		return nil, err
@@ -40,6 +66,11 @@ func Objects(
 	}
 	if err := w.walk(); err != nil {
 		return nil, err
+	}
+	for h, included := range w.explicit {
+		if !included {
+			w.result = append(w.result, h)
+		}
 	}
 	return w.result, nil
 }

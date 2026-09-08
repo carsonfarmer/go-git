@@ -3,6 +3,7 @@ package revlist
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/go-git/go-git/v6/plumbing"
@@ -13,6 +14,8 @@ import (
 
 // objectWalk holds the state for a single Objects computation.
 type objectWalk struct {
+	blobLimit  *uint64
+	explicit   map[plumbing.Hash]bool
 	s          storer.EncodedObjectStorer
 	shallows   map[plumbing.Hash]struct{}
 	wantsQueue []*object.Commit
@@ -60,12 +63,14 @@ func shallowSet(s storer.EncodedObjectStorer) (map[plumbing.Hash]struct{}, error
 // seedWants resolves each want hash and enqueues commits for walking.
 // Non-commit objects (blobs, trees, tags) are added directly to the result.
 func (w *objectWalk) seedWants(wants []plumbing.Hash) error {
+	trees := []*object.Tree{}
+	wants = slices.Clip(wants)
 	for i := 0; i < len(wants); i++ {
 		h := wants[i]
 		if _, ok := w.wantsSeen[h]; ok {
 			continue
 		}
-		if _, ok := w.seen[h]; ok {
+		if _, ok := w.seen[h]; ok && w.explicit == nil {
 			continue
 		}
 
@@ -74,13 +79,16 @@ func (w *objectWalk) seedWants(wants []plumbing.Hash) error {
 			return fmt.Errorf("getting wanted object %s: %w", h, err)
 		}
 
+		if w.explicit != nil {
+			w.explicit[h] = o.Type() != plumbing.CommitObject
+		}
+		w.wantsSeen[h] = struct{}{}
 		switch o.Type() {
 		case plumbing.CommitObject:
 			c, err := object.DecodeCommit(w.s, o)
 			if err != nil {
 				return fmt.Errorf("decoding commit %s: %w", h, err)
 			}
-			w.wantsSeen[h] = struct{}{}
 			insertSorted(&w.wantsQueue, c)
 		case plumbing.TagObject:
 			tag, err := object.DecodeTag(w.s, o)
@@ -91,11 +99,16 @@ func (w *objectWalk) seedWants(wants []plumbing.Hash) error {
 			w.result = append(w.result, tag.Hash)
 			wants = append(wants, tag.Target)
 		case plumbing.TreeObject:
+			if _, seen := w.seen[h]; seen {
+				w.result = append(w.result, h)
+			}
 			t, err := object.GetTree(w.s, h)
 			if err != nil {
 				return fmt.Errorf("getting tree %s: %w", h, err)
 			}
-			if err := w.collectAllTreeObjects(t); err != nil {
+			if w.explicit != nil || w.blobLimit != nil {
+				trees = append(trees, t)
+			} else if err := w.collectAllTreeObjects(t); err != nil {
 				return err
 			}
 		case plumbing.BlobObject:
@@ -103,6 +116,11 @@ func (w *objectWalk) seedWants(wants []plumbing.Hash) error {
 			w.result = append(w.result, h)
 		default:
 			return fmt.Errorf("unsupported object type %s for %s", o.Type(), h)
+		}
+	}
+	for _, t := range trees {
+		if err := w.collectAllTreeObjects(t); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -310,6 +328,9 @@ func (w *objectWalk) walkFull() error {
 		}
 		w.seen[lc.Hash] = struct{}{}
 		w.result = append(w.result, lc.Hash)
+		if _, explicit := w.explicit[lc.Hash]; explicit {
+			w.explicit[lc.Hash] = true
+		}
 
 		tree, err := lc.Tree()
 		if err != nil {
@@ -345,6 +366,9 @@ func (w *objectWalk) processCommitTrees(lc *object.Commit) error {
 	if _, ok := w.seen[lc.Hash]; !ok {
 		w.seen[lc.Hash] = struct{}{}
 		w.result = append(w.result, lc.Hash)
+		if _, explicit := w.explicit[lc.Hash]; explicit {
+			w.explicit[lc.Hash] = true
+		}
 	}
 
 	newTree, err := lc.Tree()
@@ -457,8 +481,9 @@ func (w *objectWalk) collectChangedTreeObjects(newTree *object.Tree, oldTrees []
 				return err
 			}
 		} else {
-			w.seen[e.Hash] = struct{}{}
-			w.result = append(w.result, e.Hash)
+			if err := w.collectBlob(e.Hash); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -491,10 +516,31 @@ func (w *objectWalk) collectAllTreeObjects(t *object.Tree) error {
 				return err
 			}
 		} else {
-			w.seen[e.Hash] = struct{}{}
-			w.result = append(w.result, e.Hash)
+			if err := w.collectBlob(e.Hash); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
+}
+
+// collectBlob knows the type from the tree entry, so blob:none needs no lookup.
+func (w *objectWalk) collectBlob(h plumbing.Hash) error {
+	if w.blobLimit != nil {
+		if *w.blobLimit == 0 {
+			return nil
+		}
+		size, err := w.s.EncodedObjectSize(h)
+		if err != nil {
+			return err
+		}
+		w.seen[h] = struct{}{}
+		if uint64(size) >= *w.blobLimit {
+			return nil
+		}
+	}
+	w.seen[h] = struct{}{}
+	w.result = append(w.result, h)
 	return nil
 }
 

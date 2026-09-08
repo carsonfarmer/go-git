@@ -51,16 +51,17 @@ func parseFetchFilter(filter packp.Filter) (*uint64, error) {
 	return &limit, nil
 }
 
-func filterFetchObjects(st storage.Storer, objs, wants []plumbing.Hash, limit *uint64) ([]plumbing.Hash, error) {
-	explicit := make(map[plumbing.Hash]bool, len(wants))
-	// Git treats the targets of explicitly wanted annotated tags as wanted too.
+// explicitFetchWants expands only requested tag chains, not the object graph.
+// Shallow set subtraction must not remove these objects based on common haves.
+func explicitFetchWants(st storage.Storer, wants []plumbing.Hash) ([]plumbing.Hash, error) {
 	wants = append([]plumbing.Hash(nil), wants...)
+	seen := make(map[plumbing.Hash]struct{}, len(wants))
 	for i := 0; i < len(wants); i++ {
 		h := wants[i]
-		if _, seen := explicit[h]; seen {
+		if _, ok := seen[h]; ok {
 			continue
 		}
-		explicit[h] = false
+		seen[h] = struct{}{}
 		obj, err := st.EncodedObject(plumbing.AnyObject, h)
 		if err != nil {
 			return nil, err
@@ -73,28 +74,5 @@ func filterFetchObjects(st storage.Storer, objs, wants []plumbing.Hash, limit *u
 			wants = append(wants, tag.Target)
 		}
 	}
-	kept := objs[:0]
-	for _, h := range objs {
-		_, wanted := explicit[h]
-		if wanted {
-			explicit[h] = true
-		}
-		if !wanted && limit != nil {
-			obj, err := st.EncodedObject(plumbing.AnyObject, h)
-			if err != nil {
-				return nil, err
-			}
-			if obj.Type() == plumbing.BlobObject && uint64(obj.Size()) >= *limit {
-				continue
-			}
-		}
-		kept = append(kept, h)
-	}
-	for _, h := range wants {
-		if !explicit[h] {
-			kept = append(kept, h)
-			explicit[h] = true
-		}
-	}
-	return kept, nil
+	return wants, nil
 }

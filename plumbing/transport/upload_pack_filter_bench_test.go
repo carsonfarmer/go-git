@@ -11,6 +11,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/filemode"
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/protocol/packp"
+	"github.com/go-git/go-git/v6/plumbing/revlist"
 	"github.com/go-git/go-git/v6/storage"
 	"github.com/go-git/go-git/v6/storage/memory"
 )
@@ -18,11 +19,17 @@ import (
 type selectionStorage struct {
 	storage.Storer
 	reads uint64
+	sizes uint64
 }
 
 func (s *selectionStorage) EncodedObject(kind plumbing.ObjectType, h plumbing.Hash) (plumbing.EncodedObject, error) {
 	s.reads++
 	return s.Storer.EncodedObject(kind, h)
+}
+
+func (s *selectionStorage) EncodedObjectSize(h plumbing.Hash) (int64, error) {
+	s.sizes++
+	return s.Storer.EncodedObjectSize(h)
 }
 
 // BenchmarkFetchObjectSelection excludes pack encoding and network I/O.
@@ -69,21 +76,21 @@ func BenchmarkFetchObjectSelection(b *testing.B) {
 					counted := &selectionStorage{Storer: st}
 					b.ReportAllocs()
 					for b.Loop() {
-						objs, err := objectsToUpload(counted, wants, nil)
+						var objs []plumbing.Hash
+						if mode == "baseline" {
+							objs, err = objectsToUpload(counted, wants, nil)
+						} else {
+							objs, err = revlist.ObjectsWithOptions(counted, wants, nil, revlist.ObjectsOptions{BlobLimit: limit, IncludeWants: true})
+						}
 						if err != nil {
 							b.Fatal(err)
-						}
-						if mode != "baseline" {
-							objs, err = filterFetchObjects(counted, objs, wants, limit)
-							if err != nil {
-								b.Fatal(err)
-							}
 						}
 						if len(objs) < 2 {
 							b.Fatal("missing commit or tree")
 						}
 					}
 					b.ReportMetric(float64(counted.reads)/float64(b.N), "object-reads/op")
+					b.ReportMetric(float64(counted.sizes)/float64(b.N), "size-reads/op")
 				})
 			}
 		})
