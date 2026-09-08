@@ -115,15 +115,18 @@ func fetchObjects(st storage.Storer, wants, haves []plumbing.Hash, selection rev
 	if err != nil {
 		return nil, err
 	}
-	seen := make(map[plumbing.Hash]struct{}, len(objects))
+	missing := make(map[plumbing.Hash]struct{}, len(explicit))
+	for _, h := range explicit {
+		missing[h] = struct{}{}
+	}
 	for _, h := range objects {
-		seen[h] = struct{}{}
+		delete(missing, h)
 	}
 	objects = slices.Clip(objects)
 	for _, h := range explicit {
-		if _, ok := seen[h]; !ok {
+		if _, ok := missing[h]; ok {
 			objects = append(objects, h)
-			seen[h] = struct{}{}
+			delete(missing, h)
 		}
 	}
 	return objects, nil
