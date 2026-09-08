@@ -36,18 +36,7 @@ func TestUploadPackV2ExplicitTreeClosure(t *testing.T) {
 		t.Run(format.String(), func(t *testing.T) {
 			t.Parallel()
 			st := memory.NewStorage(memory.WithObjectFormat(format))
-			put := func(kind plumbing.ObjectType, data string) plumbing.Hash {
-				o := st.NewEncodedObject()
-				o.SetType(kind)
-				w, err := o.Writer()
-				require.NoError(t, err)
-				_, err = w.Write([]byte(data))
-				require.NoError(t, err)
-				require.NoError(t, w.Close())
-				h, err := st.SetEncodedObject(o)
-				require.NoError(t, err)
-				return h
-			}
+
 			tree := func(entries []object.TreeEntry) plumbing.Hash {
 				o := st.NewEncodedObject()
 				require.NoError(t, (&object.Tree{Entries: entries}).Encode(o))
@@ -55,12 +44,12 @@ func TestUploadPackV2ExplicitTreeClosure(t *testing.T) {
 				require.NoError(t, err)
 				return h
 			}
-			small, large := put(plumbing.BlobObject, "abc"), put(plumbing.BlobObject, "123456789")
+			small, large := putFilterObject(t, st, plumbing.BlobObject, "abc"), putFilterObject(t, st, plumbing.BlobObject, "123456789")
 			sub := tree([]object.TreeEntry{{Name: "small", Mode: filemode.Regular, Hash: small}})
 			root := tree([]object.TreeEntry{{Name: "large", Mode: filemode.Regular, Hash: large}, {Name: "sub", Mode: filemode.Dir, Hash: sub}})
-			commit := put(plumbing.CommitObject, fmt.Sprintf("tree %s\nauthor A <a@b> 1 +0000\ncommitter A <a@b> 1 +0000\n\nc\n", root))
-			tag := put(plumbing.TagObject, fmt.Sprintf("object %s\ntype tree\ntag t\ntagger A <a@b> 1 +0000\n\nt\n", root))
-			nested := put(plumbing.TagObject, fmt.Sprintf("object %s\ntype tag\ntag outer\ntagger A <a@b> 1 +0000\n\nt\n", tag))
+			commit := putFilterObject(t, st, plumbing.CommitObject, fmt.Sprintf("tree %s\nauthor A <a@b> 1 +0000\ncommitter A <a@b> 1 +0000\n\nc\n", root))
+			tag := putFilterObject(t, st, plumbing.TagObject, fmt.Sprintf("object %s\ntype tree\ntag t\ntagger A <a@b> 1 +0000\n\nt\n", root))
+			nested := putFilterObject(t, st, plumbing.TagObject, fmt.Sprintf("object %s\ntype tag\ntag outer\ntagger A <a@b> 1 +0000\n\nt\n", tag))
 			for _, tc := range []struct {
 				name, filter string
 				blobs        []plumbing.Hash
@@ -106,14 +95,8 @@ func TestUploadPackV2ExplicitTreeClosure(t *testing.T) {
 func TestUploadPackV2UnfilteredSpecializedWalker(t *testing.T) {
 	t.Parallel()
 	st := memory.NewStorage()
-	obj := st.NewEncodedObject()
-	obj.SetType(plumbing.BlobObject)
-	w, err := obj.Writer()
-	require.NoError(t, err)
-	_, err = w.Write([]byte("hello"))
-	require.NoError(t, err)
-	require.NoError(t, w.Close())
-	h, err := st.SetEncodedObject(obj)
+	h := putFilterObject(t, st, plumbing.BlobObject, "hello")
+	_, err := st.Config()
 	require.NoError(t, err)
 	for _, present := range []bool{false, true} {
 		t.Run(fmt.Sprintf("already-selected-%v", present), func(t *testing.T) {
@@ -140,17 +123,8 @@ func TestUploadPackV2UnfilteredSpecializedWalker(t *testing.T) {
 func TestUploadPackV2SpecializedCommitWalk(t *testing.T) {
 	t.Parallel()
 	st := memory.NewStorage()
-	obj := st.NewEncodedObject()
-	obj.SetType(plumbing.CommitObject)
-	w, err := obj.Writer()
-	require.NoError(t, err)
-	// The specialized walker owns traversal; a commit-only result must not
-	// trigger a second generic walk of its tree or history.
-	_, err = fmt.Fprintf(w, "tree %s\nauthor A <a@b> 1 +0000\ncommitter A <a@b> 1 +0000\n\nc\n", strings.Repeat("1", 40))
-	require.NoError(t, err)
-	require.NoError(t, w.Close())
-	h, err := st.SetEncodedObject(obj)
-	require.NoError(t, err)
+	// The specialized walker owns traversal; missing history must not trigger a generic walk.
+	h := putFilterObject(t, st, plumbing.CommitObject, fmt.Sprintf("tree %s\nauthor A <a@b> 1 +0000\ncommitter A <a@b> 1 +0000\n\nc\n", strings.Repeat("1", 40)))
 	backend := &fetchWalkerStorage{Storer: st, result: []plumbing.Hash{h}}
 	serveUploadPackV2Test(t, backend, v2Request(t, "fetch", nil, []string{"want " + h.String(), "done"}))
 	require.True(t, backend.called)

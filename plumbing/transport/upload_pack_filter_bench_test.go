@@ -38,22 +38,11 @@ func BenchmarkFetchObjectSelection(b *testing.B) {
 	for _, count := range []int{1000, 10000} {
 		b.Run(fmt.Sprintf("blobs=%d", count), func(b *testing.B) {
 			st := memory.NewStorage()
-			put := func(kind plumbing.ObjectType, data string) plumbing.Hash {
-				o := st.NewEncodedObject()
-				o.SetType(kind)
-				w, err := o.Writer()
-				require.NoError(b, err)
-				_, err = w.Write([]byte(data))
-				require.NoError(b, err)
-				require.NoError(b, w.Close())
-				h, err := st.SetEncodedObject(o)
-				require.NoError(b, err)
-				return h
-			}
+
 			entries := make([]object.TreeEntry, 0, count)
 			for i := range count {
 				content := fmt.Sprintf("%08d", i) + strings.Repeat("x", 32+2016*(i%2))
-				h := put(plumbing.BlobObject, content)
+				h := putFilterObject(b, st, plumbing.BlobObject, content)
 				entries = append(entries, object.TreeEntry{Name: fmt.Sprintf("%08d", i), Mode: filemode.Regular, Hash: h})
 			}
 			o := st.NewEncodedObject()
@@ -61,12 +50,12 @@ func BenchmarkFetchObjectSelection(b *testing.B) {
 			tree, err := st.SetEncodedObject(o)
 			require.NoError(b, err)
 			commit := fmt.Sprintf("tree %s\nauthor A <a@b> 1 +0000\ncommitter A <a@b> 1 +0000\n\nselection\n", tree)
-			tip := put(plumbing.CommitObject, commit)
+			tip := putFilterObject(b, st, plumbing.CommitObject, commit)
 			wants := []plumbing.Hash{tip}
-			for _, mode := range []string{"baseline", "unfiltered", "blob:none", "blob:limit=1k"} {
+			for _, mode := range []string{"baseline", "unfiltered", "specialized", "blob:none", "blob:limit=1k"} {
 				b.Run(mode, func(b *testing.B) {
 					filter := packp.Filter(mode)
-					if mode == "baseline" || mode == "unfiltered" {
+					if mode == "baseline" || mode == "unfiltered" || mode == "specialized" {
 						filter = ""
 					}
 					limit, err := parseFetchFilter(filter)
@@ -74,13 +63,19 @@ func BenchmarkFetchObjectSelection(b *testing.B) {
 						b.Fatal(err)
 					}
 					counted := &selectionStorage{Storer: st}
+					var backend storage.Storer = counted
+					if mode == "specialized" {
+						objects, err := objectsToUpload(st, wants, nil)
+						require.NoError(b, err)
+						backend = &fetchWalkerStorage{Storer: counted, result: objects}
+					}
 					b.ReportAllocs()
 					for b.Loop() {
 						var objs []plumbing.Hash
 						if mode == "baseline" {
 							objs, err = objectsToUpload(counted, wants, nil)
 						} else {
-							objs, err = revlist.ObjectsWithOptions(counted, wants, nil, revlist.ObjectsOptions{BlobLimit: limit, IncludeWants: true})
+							objs, err = fetchObjects(backend, wants, nil, revlist.ObjectsOptions{BlobLimit: limit, IncludeWants: true})
 						}
 						if err != nil {
 							b.Fatal(err)

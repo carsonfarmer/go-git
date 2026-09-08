@@ -16,6 +16,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/protocol/packp"
 	"github.com/go-git/go-git/v6/plumbing/protocol/packp/sideband"
+	"github.com/go-git/go-git/v6/plumbing/storer"
 	"github.com/go-git/go-git/v6/storage/memory"
 	"github.com/go-git/go-git/v6/utils/ioutil"
 )
@@ -26,21 +27,10 @@ func TestUploadPackV2BlobFilters(t *testing.T) {
 		t.Run(format.String(), func(t *testing.T) {
 			t.Parallel()
 			st := memory.NewStorage(memory.WithObjectFormat(format))
-			put := func(kind plumbing.ObjectType, data string) plumbing.Hash {
-				o := st.NewEncodedObject()
-				o.SetType(kind)
-				w, err := o.Writer()
-				require.NoError(t, err)
-				_, err = w.Write([]byte(data))
-				require.NoError(t, err)
-				require.NoError(t, w.Close())
-				h, err := st.SetEncodedObject(o)
-				require.NoError(t, err)
-				return h
-			}
-			small := put(plumbing.BlobObject, "123")
-			boundary := put(plumbing.BlobObject, "1234")
-			nine := put(plumbing.BlobObject, "123456789")
+
+			small := putFilterObject(t, st, plumbing.BlobObject, "123")
+			boundary := putFilterObject(t, st, plumbing.BlobObject, "1234")
+			nine := putFilterObject(t, st, plumbing.BlobObject, "123456789")
 			treeObj := st.NewEncodedObject()
 			require.NoError(t, (&object.Tree{Entries: []object.TreeEntry{
 				{Name: "a", Mode: filemode.Regular, Hash: small},
@@ -49,9 +39,9 @@ func TestUploadPackV2BlobFilters(t *testing.T) {
 			}}).Encode(treeObj))
 			tree, err := st.SetEncodedObject(treeObj)
 			require.NoError(t, err)
-			parent := put(plumbing.CommitObject, fmt.Sprintf("tree %s\nauthor A <a@b> 1 +0000\ncommitter A <a@b> 1 +0000\n\nparent\n", tree))
-			tip := put(plumbing.CommitObject, fmt.Sprintf("tree %s\nparent %s\nauthor A <a@b> 2 +0000\ncommitter A <a@b> 2 +0000\n\ntip\n", tree, parent))
-			tag := put(plumbing.TagObject, fmt.Sprintf("object %s\ntype blob\ntag blob\ntagger A <a@b> 2 +0000\n\ntag\n", boundary))
+			parent := putFilterObject(t, st, plumbing.CommitObject, fmt.Sprintf("tree %s\nauthor A <a@b> 1 +0000\ncommitter A <a@b> 1 +0000\n\nparent\n", tree))
+			tip := putFilterObject(t, st, plumbing.CommitObject, fmt.Sprintf("tree %s\nparent %s\nauthor A <a@b> 2 +0000\ncommitter A <a@b> 2 +0000\n\ntip\n", tree, parent))
+			tag := putFilterObject(t, st, plumbing.TagObject, fmt.Sprintf("object %s\ntype blob\ntag blob\ntagger A <a@b> 2 +0000\n\ntag\n", boundary))
 			require.NoError(t, st.SetReference(plumbing.NewHashReference("refs/tags/blob", tag)))
 			fetch := func(t *testing.T, args ...string) (*memory.Storage, packp.FetchOutput) {
 				result := serveUploadPackV2Test(t, st, v2Request(t, "fetch", []string{"object-format=" + format.String()}, args))
@@ -84,7 +74,7 @@ func TestUploadPackV2BlobFilters(t *testing.T) {
 			dst, _ := fetch(t, "want "+tip.String(), "want "+boundary.String(), "filter blob:none", "done")
 			require.Len(t, dst.Blobs, 1)
 			require.NoError(t, dst.HasEncodedObject(boundary))
-			nested := put(plumbing.TagObject, fmt.Sprintf("object %s\ntype tag\ntag nested\ntagger A <a@b> 2 +0000\n\nnested\n", tag))
+			nested := putFilterObject(t, st, plumbing.TagObject, fmt.Sprintf("object %s\ntype tag\ntag nested\ntagger A <a@b> 2 +0000\n\nnested\n", tag))
 			for _, have := range []string{"", "have " + tip.String()} {
 				args := []string{"want " + nested.String(), "filter blob:none", "done"}
 				if have != "" {
@@ -148,4 +138,18 @@ func TestFetchFilterUnits(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, tc.limit, *n)
 	}
+}
+
+func putFilterObject(t testing.TB, st storer.EncodedObjectStorer, kind plumbing.ObjectType, data string) plumbing.Hash {
+	t.Helper()
+	obj := st.NewEncodedObject()
+	obj.SetType(kind)
+	w, err := obj.Writer()
+	require.NoError(t, err)
+	_, err = w.Write([]byte(data))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	h, err := st.SetEncodedObject(obj)
+	require.NoError(t, err)
+	return h
 }
