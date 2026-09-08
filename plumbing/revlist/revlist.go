@@ -33,7 +33,8 @@ type ObjectsOptions struct {
 	// blobs; zero omits them without opening their metadata or contents.
 	BlobLimit *uint64
 	// IncludeWants keeps explicitly requested objects, including annotated
-	// tag targets, even when reachable from haves (for promisor clients).
+	// tag targets and filtered tree descendants, even when reachable from
+	// haves (for promisor clients).
 	IncludeWants bool
 }
 

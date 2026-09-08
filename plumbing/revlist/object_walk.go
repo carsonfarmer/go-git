@@ -99,9 +99,6 @@ func (w *objectWalk) seedWants(wants []plumbing.Hash) error {
 			w.result = append(w.result, tag.Hash)
 			wants = append(wants, tag.Target)
 		case plumbing.TreeObject:
-			if _, seen := w.seen[h]; seen {
-				w.result = append(w.result, h)
-			}
 			t, err := object.GetTree(w.s, h)
 			if err != nil {
 				return fmt.Errorf("getting tree %s: %w", h, err)
@@ -118,9 +115,33 @@ func (w *objectWalk) seedWants(wants []plumbing.Hash) error {
 			return fmt.Errorf("unsupported object type %s for %s", o.Type(), h)
 		}
 	}
-	for _, t := range trees {
-		if err := w.collectAllTreeObjects(t); err != nil {
-			return err
+	if len(trees) > 0 && w.explicit != nil {
+		// An explicit tree (including a tag target) requests its filtered
+		// closure even when a have commit references it. Use a separate seen
+		// set so have seeding cannot prune those descendants.
+		treeWalk := &objectWalk{s: w.s, blobLimit: w.blobLimit, seen: make(map[plumbing.Hash]struct{})}
+		for _, t := range trees {
+			if err := treeWalk.collectAllTreeObjects(t); err != nil {
+				return err
+			}
+		}
+		included := make(map[plumbing.Hash]struct{}, len(w.result))
+		for _, h := range w.result {
+			included[h] = struct{}{}
+		}
+		for _, h := range treeWalk.result {
+			if _, ok := included[h]; !ok {
+				w.result = append(w.result, h)
+			}
+		}
+		for h := range treeWalk.seen {
+			w.seen[h] = struct{}{}
+		}
+	} else {
+		for _, t := range trees {
+			if err := w.collectAllTreeObjects(t); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

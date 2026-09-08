@@ -3,12 +3,14 @@ package transport
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/protocol/packp"
+	"github.com/go-git/go-git/v6/plumbing/revlist"
 	"github.com/go-git/go-git/v6/storage"
 )
 
@@ -55,11 +57,13 @@ func parseFetchFilter(filter packp.Filter) (*uint64, error) {
 	return &limit, nil
 }
 
-// explicitFetchWants expands only requested tag chains, not the object graph.
-// Shallow set subtraction must not remove these objects based on common haves.
-func explicitFetchWants(st storage.Storer, wants []plumbing.Hash) ([]plumbing.Hash, error) {
+// explicitFetchWants keeps tag chains and filtered explicit tree closures.
+// It never traverses commit history. Shallow subtraction and specialized
+// walkers must not remove these objects based on common commit haves.
+func explicitFetchWants(st storage.Storer, wants []plumbing.Hash, blobLimit *uint64) ([]plumbing.Hash, error) {
 	wants = append([]plumbing.Hash(nil), wants...)
 	seen := make(map[plumbing.Hash]struct{}, len(wants))
+	var trees []plumbing.Hash
 	for i := 0; i < len(wants); i++ {
 		h := wants[i]
 		if _, ok := seen[h]; ok {
@@ -70,7 +74,10 @@ func explicitFetchWants(st storage.Storer, wants []plumbing.Hash) ([]plumbing.Ha
 		if err != nil {
 			return nil, err
 		}
-		if obj.Type() == plumbing.TagObject {
+		switch obj.Type() {
+		case plumbing.TreeObject:
+			trees = append(trees, h)
+		case plumbing.TagObject:
 			tag, err := object.DecodeTag(st, obj)
 			if err != nil {
 				return nil, err
@@ -78,5 +85,46 @@ func explicitFetchWants(st storage.Storer, wants []plumbing.Hash) ([]plumbing.Ha
 			wants = append(wants, tag.Target)
 		}
 	}
+	if len(trees) > 0 {
+		objects, err := revlist.ObjectsWithOptions(st, trees, nil, revlist.ObjectsOptions{BlobLimit: blobLimit})
+		if err != nil {
+			return nil, err
+		}
+		wants = append(wants, objects...)
+	}
 	return wants, nil
+}
+
+// fetchObjects preserves specialized unfiltered walks. Only explicit objects
+// need a supplemental selection, so ordinary commit fetches do not walk their
+// history twice. Filtered and generic fetches select in the existing walk.
+func fetchObjects(st storage.Storer, wants, haves []plumbing.Hash, selection revlist.ObjectsOptions) ([]plumbing.Hash, error) {
+	if selection.BlobLimit != nil {
+		return revlist.ObjectsWithOptions(st, wants, haves, selection)
+	}
+	if _, ok := st.(interface {
+		RevListObjects(wants, haves []plumbing.Hash) ([]plumbing.Hash, error)
+	}); !ok {
+		return revlist.ObjectsWithOptions(st, wants, haves, selection)
+	}
+	objects, err := objectsToUpload(st, wants, haves)
+	if err != nil {
+		return nil, err
+	}
+	explicit, err := explicitFetchWants(st, wants, nil)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[plumbing.Hash]struct{}, len(objects))
+	for _, h := range objects {
+		seen[h] = struct{}{}
+	}
+	objects = slices.Clip(objects)
+	for _, h := range explicit {
+		if _, ok := seen[h]; !ok {
+			objects = append(objects, h)
+			seen[h] = struct{}{}
+		}
+	}
+	return objects, nil
 }
