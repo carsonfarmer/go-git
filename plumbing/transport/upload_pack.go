@@ -794,7 +794,7 @@ func serveFetchV2(_ context.Context, st storage.Storer, w io.WriteCloser, args *
 			_ = w.Close()
 			return true, fmt.Errorf("getting client objects: %w", cerr)
 		}
-		explicit, err := explicitFetchWants(st, wants, blobLimit)
+		explicit, err := revlist.ExplicitObjects(st, wants, blobLimit)
 		if err != nil {
 			return true, err
 		}
@@ -811,7 +811,7 @@ func serveFetchV2(_ context.Context, st storage.Storer, w io.WriteCloser, args *
 			out.ShallowInfo = &packp.ShallowInfo{Shallows: newBoundary}
 			packSt = &shallowBoundaryStorer{Storer: st, boundary: newBoundary}
 		}
-		objs, err = fetchObjects(packSt, wants, haves, selection)
+		objs, err = revlist.ObjectsWithOptions(packSt, wants, haves, selection)
 		if err != nil {
 			_ = w.Close()
 			return true, fmt.Errorf("getting objects to upload: %w", err)

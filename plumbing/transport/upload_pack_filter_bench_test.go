@@ -75,7 +75,7 @@ func BenchmarkFetchObjectSelection(b *testing.B) {
 						if mode == "baseline" {
 							objs, err = objectsToUpload(counted, wants, nil)
 						} else {
-							objs, err = fetchObjects(backend, wants, nil, revlist.ObjectsOptions{BlobLimit: limit, IncludeWants: true})
+							objs, err = revlist.ObjectsWithOptions(backend, wants, nil, revlist.ObjectsOptions{BlobLimit: limit, IncludeWants: true})
 						}
 						if err != nil {
 							b.Fatal(err)

@@ -83,7 +83,7 @@ func TestObjectsOptions(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []plumbing.Hash{hash, tag, tip} {
+	for _, want := range []plumbing.Hash{hash, tag} {
 		got, err := ObjectsWithOptions(st, []plumbing.Hash{want}, []plumbing.Hash{tip}, ObjectsOptions{BlobLimit: &zero, IncludeWants: true})
 		require.NoError(t, err)
 		require.Contains(t, got, want)
@@ -91,6 +91,9 @@ func TestObjectsOptions(t *testing.T) {
 			require.Contains(t, got, hash)
 		}
 	}
+	got, err := ObjectsWithOptions(st, []plumbing.Hash{tip, hash}, []plumbing.Hash{tip}, ObjectsOptions{IncludeWants: true})
+	require.NoError(t, err)
+	require.Equal(t, []plumbing.Hash{hash}, got)
 }
 
 func TestObjectsOptionsZeroUsesSpecializedWalker(t *testing.T) {
