@@ -633,6 +633,10 @@ func peelToNonTag(st storage.Storer, h plumbing.Hash) (plumbing.Hash, bool) {
 // (the stateful negotiation continues until the server is ready). A stateless
 // (HTTP) round always concludes, since the client re-POSTs each round.
 func serveFetchV2(_ context.Context, st storage.Storer, w io.WriteCloser, args *packp.FetchArgs, opts *UploadPackRequest) (concluded bool, err error) {
+	blobLimit, err := parseFetchFilter(args.Filter)
+	if err != nil {
+		return true, err
+	}
 	wants := args.Wants
 	haves := args.Haves
 	clientShallows := args.Shallows
@@ -807,6 +811,13 @@ func serveFetchV2(_ context.Context, st storage.Storer, w io.WriteCloser, args *
 			_ = w.Close()
 			return true, fmt.Errorf("getting objects to upload: %w", err)
 		}
+	}
+
+	// A promisor client can explicitly request a blob beneath a common have.
+	// Reachability alone cannot establish that it already has that object.
+	objs, err = filterFetchObjects(st, objs, wants, blobLimit)
+	if err != nil {
+		return true, err
 	}
 
 	// include-tag: add annotated tags whose target is in the pack (auto-tag

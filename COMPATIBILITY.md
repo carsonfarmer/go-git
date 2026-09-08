@@ -199,7 +199,7 @@ compatibility status with go-git.
 | `allow-tip-sha1-in-want`       | ✅           |       |
 | `allow-reachable-sha1-in-want` | ❌           |       |
 | `push-cert=<nonce>`            | ❌           |       |
-| `filter`                       | ⚠️ (partial) | Fetching with a filter is supported and records the partial clone (promisor-marked packs, `remote.<name>.promisor` and `partialclonefilter`), so git accepts the result. go-git cannot fetch the withheld objects back on demand, so reading one fails rather than backfilling it. Not offered when serving. |
+| `filter`                       | ⚠️ (partial) | Fetching with a filter is supported and records the partial clone (promisor-marked packs, `remote.<name>.promisor` and `partialclonefilter`), so git accepts the result. go-git cannot fetch the withheld objects back on demand, so reading one fails rather than backfilling it. Serving supports protocol-v2 `blob:none` and `blob:limit=<n>` filters, including explicitly requested omitted objects. |
 | `session-id=<session id>`      | ❌           |       |
 
 ## Transport Schemes

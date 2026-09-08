@@ -269,7 +269,10 @@ func (r *FetchArgs) Decode(rd io.Reader) error {
 			}
 			r.Deepen = n
 
-		case strings.HasPrefix(line, "filter "):
+		case line == "filter" || strings.HasPrefix(line, "filter "):
+			if len(line) <= 7 || r.Filter != "" {
+				return fmt.Errorf("empty or repeated filter: %q", line)
+			}
 			r.Filter = Filter(line[7:])
 
 		case line == "wait-for-done":

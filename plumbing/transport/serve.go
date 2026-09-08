@@ -132,7 +132,6 @@ func AdvertiseCapabilities(_ context.Context, st storage.Storer, w io.Writer, se
 //
 // TODO: advertise these once implemented:
 //   - ls-refs=unborn       report an unborn HEAD on an empty repository
-//   - fetch=filter         partial-clone object filters
 //   - fetch=ref-in-want    want-ref negotiation
 //   - fetch=sideband-all   sideband for the entire response, not just the packfile
 //   - fetch=packfile-uris  offload pack data to out-of-band URIs
@@ -143,7 +142,7 @@ func serverV2Capabilities(st storage.Storer) capability.List {
 	var caps capability.List
 	caps.Set(capability.Agent, capability.DefaultAgent())
 	caps.Set(capability.LsRefs)
-	caps.Set(capability.FetchCmd, "shallow")
+	caps.Set(capability.FetchCmd, "shallow", "filter")
 	caps.Set(capability.ObjectFormat, objectFormat(st).String())
 	return caps
 }

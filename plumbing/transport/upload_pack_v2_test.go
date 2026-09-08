@@ -80,7 +80,7 @@ func TestUploadPackV2AdvertisementCapabilities(t *testing.T) {
 
 	require.Contains(t, adv, "version 2")
 	require.Contains(t, adv, "ls-refs")
-	require.Contains(t, adv, "fetch=shallow")
+	require.Contains(t, adv, "fetch=shallow filter")
 	require.Contains(t, adv, "object-format=")
 
 	// git omits the smart-HTTP "# service=..." line for v2 even over HTTP
