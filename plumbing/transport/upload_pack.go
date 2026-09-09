@@ -635,6 +635,7 @@ func peelToNonTag(st storage.Storer, h plumbing.Hash) (plumbing.Hash, bool) {
 func serveFetchV2(_ context.Context, st storage.Storer, w io.WriteCloser, args *packp.FetchArgs, opts *UploadPackRequest) (concluded bool, err error) {
 	blobLimit, err := parseFetchFilter(args.Filter)
 	if err != nil {
+		_ = w.Close()
 		return true, err
 	}
 	wants := args.Wants
@@ -796,7 +797,8 @@ func serveFetchV2(_ context.Context, st storage.Storer, w io.WriteCloser, args *
 		}
 		explicit, err := revlist.ExplicitObjects(st, wants, blobLimit)
 		if err != nil {
-			return true, err
+			_ = w.Close()
+			return true, fmt.Errorf("getting explicit objects: %w", err)
 		}
 		objs = hashDifference(newView, clientView, explicit)
 		if haveNewBoundary {
@@ -864,16 +866,14 @@ func serveFetchV2(_ context.Context, st storage.Storer, w io.WriteCloser, args *
 
 // hashDifference returns the elements of a that are not in b, preserving a's
 // order. It computes the objects a deepened client is missing (newView minus the
-// client's existing view).
-func hashDifference(a, b []plumbing.Hash, keep ...[]plumbing.Hash) []plumbing.Hash {
+// client's existing view). Elements of keep are never subtracted.
+func hashDifference(a, b, keep []plumbing.Hash) []plumbing.Hash {
 	set := make(map[plumbing.Hash]struct{}, len(b))
 	for _, h := range b {
 		set[h] = struct{}{}
 	}
-	for _, hashes := range keep {
-		for _, h := range hashes {
-			delete(set, h)
-		}
+	for _, h := range keep {
+		delete(set, h)
 	}
 	var out []plumbing.Hash
 	for _, h := range a {
