@@ -14,16 +14,18 @@ import (
 
 // objectWalk holds the state for a single Objects computation.
 type objectWalk struct {
-	blobLimit  *uint64
-	explicit   map[plumbing.Hash]bool
-	s          storer.EncodedObjectStorer
-	shallows   map[plumbing.Hash]struct{}
-	wantsQueue []*object.Commit
-	havesQueue []*object.Commit
-	wantsSeen  map[plumbing.Hash]struct{}
-	havesSeen  map[plumbing.Hash]struct{}
-	seen       map[plumbing.Hash]struct{}
-	result     []plumbing.Hash
+	blobLimit    *uint64
+	includeWants bool
+	// explicitOnly drops commit wants unread; ExplicitObjects never walks.
+	explicitOnly bool
+	s            storer.EncodedObjectStorer
+	shallows     map[plumbing.Hash]struct{}
+	wantsQueue   []*object.Commit
+	havesQueue   []*object.Commit
+	wantsSeen    map[plumbing.Hash]struct{}
+	havesSeen    map[plumbing.Hash]struct{}
+	seen         map[plumbing.Hash]struct{}
+	result       []plumbing.Hash
 }
 
 func newObjectWalk(s storer.EncodedObjectStorer) (*objectWalk, error) {
@@ -70,7 +72,7 @@ func (w *objectWalk) seedWants(wants []plumbing.Hash) error {
 		if _, ok := w.wantsSeen[h]; ok {
 			continue
 		}
-		if _, ok := w.seen[h]; ok && w.explicit == nil {
+		if _, ok := w.seen[h]; ok && !w.includeWants {
 			continue
 		}
 
@@ -79,12 +81,12 @@ func (w *objectWalk) seedWants(wants []plumbing.Hash) error {
 			return fmt.Errorf("getting wanted object %s: %w", h, err)
 		}
 
-		if w.explicit != nil {
-			w.explicit[h] = o.Type() != plumbing.CommitObject
-		}
 		w.wantsSeen[h] = struct{}{}
 		switch o.Type() {
 		case plumbing.CommitObject:
+			if w.explicitOnly {
+				continue
+			}
 			c, err := object.DecodeCommit(w.s, o)
 			if err != nil {
 				return fmt.Errorf("decoding commit %s: %w", h, err)
@@ -103,7 +105,7 @@ func (w *objectWalk) seedWants(wants []plumbing.Hash) error {
 			if err != nil {
 				return fmt.Errorf("getting tree %s: %w", h, err)
 			}
-			if w.explicit != nil || w.blobLimit != nil {
+			if w.includeWants || w.blobLimit != nil {
 				trees = append(trees, t)
 			} else if err := w.collectAllTreeObjects(t); err != nil {
 				return err
@@ -115,7 +117,7 @@ func (w *objectWalk) seedWants(wants []plumbing.Hash) error {
 			return fmt.Errorf("unsupported object type %s for %s", o.Type(), h)
 		}
 	}
-	if len(trees) > 0 && w.explicit != nil {
+	if len(trees) > 0 && w.includeWants {
 		// An explicit tree (including a tag target) requests its filtered
 		// closure even when a have commit references it. Use a separate seen
 		// set so have seeding cannot prune those descendants.
@@ -349,9 +351,6 @@ func (w *objectWalk) walkFull() error {
 		}
 		w.seen[lc.Hash] = struct{}{}
 		w.result = append(w.result, lc.Hash)
-		if _, explicit := w.explicit[lc.Hash]; explicit {
-			w.explicit[lc.Hash] = true
-		}
 
 		tree, err := lc.Tree()
 		if err != nil {
@@ -387,9 +386,6 @@ func (w *objectWalk) processCommitTrees(lc *object.Commit) error {
 	if _, ok := w.seen[lc.Hash]; !ok {
 		w.seen[lc.Hash] = struct{}{}
 		w.result = append(w.result, lc.Hash)
-		if _, explicit := w.explicit[lc.Hash]; explicit {
-			w.explicit[lc.Hash] = true
-		}
 	}
 
 	newTree, err := lc.Tree()
