@@ -121,8 +121,8 @@ func (s *AdvRefsEncodeSuite) TestCapsWithHead() {
 func (s *AdvRefsEncodeSuite) TestRefs() {
 	ar := &AdvRefs{
 		References: []*plumbing.Reference{
-			plumbing.NewHashReference("refs/heads/master", plumbing.NewHash("a6930aaee06755d1bdcfd943fbf614e4d92bb0c7")),
 			plumbing.NewHashReference("refs/tags/v2.6.12-tree", plumbing.NewHash("1111111111111111111111111111111111111111")),
+			plumbing.NewHashReference("refs/heads/master", plumbing.NewHash("a6930aaee06755d1bdcfd943fbf614e4d92bb0c7")),
 			plumbing.NewHashReference("refs/tags/v2.7.13-tree", plumbing.NewHash("3333333333333333333333333333333333333333")),
 			plumbing.NewHashReference("refs/tags/v2.6.13-tree", plumbing.NewHash("2222222222222222222222222222222222222222")),
 			plumbing.NewHashReference("refs/tags/v2.6.11-tree", plumbing.NewHash("5dc01c595e6c6ec9ccda4f6f69c131c0dd945f8c")),

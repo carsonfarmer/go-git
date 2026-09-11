@@ -107,6 +107,7 @@ func (a *AdvRefs) Encode(w io.Writer) error {
 
 // firstRef returns the reference to use as the first line (HEAD or first available).
 func (a *AdvRefs) firstRef() (string, plumbing.Hash) {
+	var first *plumbing.Reference
 	for _, ref := range a.References {
 		if ref.Name().IsPeeled() {
 			continue
@@ -114,12 +115,12 @@ func (a *AdvRefs) firstRef() (string, plumbing.Hash) {
 		if ref.Name() == plumbing.HEAD {
 			return ref.Name().String(), ref.Hash()
 		}
-	}
-	for _, ref := range a.References {
-		if ref.Name().IsPeeled() {
-			continue
+		if first == nil || ref.Name() < first.Name() {
+			first = ref
 		}
-		return ref.Name().String(), ref.Hash()
+	}
+	if first != nil {
+		return first.Name().String(), first.Hash()
 	}
 	return "", plumbing.ZeroHash
 }
