@@ -39,6 +39,7 @@ type ObjectHeader struct {
 	content     *bytes.Buffer
 	parent      *ObjectHeader
 	diskType    plumbing.ObjectType
+	targetSize  int64
 	externalRef bool
 
 	// chainDepth caches the result of [checkDeltaChainDepth] for

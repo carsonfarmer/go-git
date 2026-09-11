@@ -57,3 +57,9 @@ func WithHighMemoryMode() ParserOption {
 		p.lowMemoryMode = false
 	}
 }
+
+// WithMaxObjectSize bounds decoded objects and delta base/target size headers.
+// A non-positive value leaves the size unlimited.
+func WithMaxObjectSize(size int64) ParserOption {
+	return func(p *Parser) { p.maxObjectSize = size }
+}

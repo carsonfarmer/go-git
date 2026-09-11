@@ -10,6 +10,7 @@ import (
 	"hash"
 	"hash/crc32"
 	"io"
+	"math"
 	"sync"
 
 	"github.com/go-git/go-git/v6/plumbing"
@@ -39,6 +40,8 @@ var (
 	// packfile never produces more data than the declared size; exceeding it
 	// indicates a structurally invalid entry.
 	ErrInflatedSizeMismatch = errors.New("packfile: inflated object exceeds declared size")
+	// ErrObjectTooLarge reports an object exceeding the configured decoded size limit.
+	ErrObjectTooLarge = errors.New("decoded object exceeds configured size limit")
 )
 
 // boundedWriter passes writes through to w up to limit bytes total, then
@@ -186,6 +189,7 @@ type Scanner struct {
 	*scannerReader
 	rbuf *bufio.Reader
 
+	maxObjectSize int64
 	lowMemoryMode bool
 }
 
@@ -464,6 +468,12 @@ func objectEntry(r *Scanner) (_ stateFn, result error) {
 		return nil, err
 	}
 
+	if size > math.MaxInt64 {
+		return nil, ErrMalformedPackfile
+	}
+	if !typ.IsDelta() && r.maxObjectSize > 0 && int64(size) > r.maxObjectSize {
+		return nil, ErrObjectTooLarge
+	}
 	oh := ObjectHeader{
 		Offset:   offset,
 		Type:     typ,
@@ -530,11 +540,39 @@ func objectEntry(r *Scanner) (_ stateFn, result error) {
 	// value, so any overrun signals a malformed entry. For delta entries
 	// the declared size is the size of the delta instruction stream, not
 	// the resolved object.
-	mw = &boundedWriter{w: mw, limit: oh.Size}
 
-	_, err = ioutil.CopyBufferPool(mw, zr)
+	bounded := &boundedWriter{w: mw, limit: oh.Size}
+	if oh.Type.IsDelta() && (r.lowMemoryMode || r.maxObjectSize > 0) {
+		delta := bufio.NewReader(io.TeeReader(zr, bounded))
+		sourceSize, err := packutil.DecodeLEB128FromReader(delta)
+		if err != nil {
+			return nil, err
+		}
+		targetSize, err := packutil.DecodeLEB128FromReader(delta)
+		if err != nil {
+			return nil, err
+		}
+		if uint64(sourceSize) > math.MaxInt64 || uint64(targetSize) > math.MaxInt64 {
+			return nil, ErrMalformedPackfile
+		}
+		if r.maxObjectSize > 0 && (int64(sourceSize) > r.maxObjectSize || int64(targetSize) > r.maxObjectSize) {
+			return nil, ErrObjectTooLarge
+		}
+		oh.targetSize = int64(targetSize)
+		// A valid instruction consumes at most eight bytes per output byte,
+		// plus the two variable-length size headers.
+		if oh.targetSize <= (math.MaxInt64-20)/8 && oh.Size > oh.targetSize*8+20 {
+			return nil, ErrInvalidDelta
+		}
+		_, err = ioutil.CopyBufferPool(io.Discard, delta)
+	} else {
+		_, err = ioutil.CopyBufferPool(bounded, zr)
+	}
 	if err != nil {
 		return nil, err
+	}
+	if bounded.n != oh.Size {
+		return nil, fmt.Errorf("%w: %w", ErrMalformedPackfile, ErrInflatedSizeMismatch)
 	}
 
 	if err := r.Flush(); err != nil {

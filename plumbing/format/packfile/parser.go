@@ -70,6 +70,8 @@ type Parser struct {
 	storage       storer.EncodedObjectStorer
 	cache         *parserCache
 	lowMemoryMode bool
+	maxObjectSize int64
+	bytesRead     int64
 
 	scanner   *Scanner
 	observers []Observer
@@ -110,6 +112,7 @@ func NewParser(data io.Reader, opts ...ParserOption) *Parser {
 	}
 
 	p.scanner = NewScanner(data, sopts...)
+	p.scanner.maxObjectSize = p.maxObjectSize
 
 	if p.storage != nil {
 		p.scanner.storage = p.storage
@@ -130,7 +133,7 @@ func NewParser(data io.Reader, opts ...ParserOption) *Parser {
 func (p *Parser) storeOrCache(oh *ObjectHeader) error {
 	// Only need to store deltas, as the scanner already stored non-delta
 	// objects.
-	if p.storage != nil && oh.diskType.IsDelta() {
+	if p.storage != nil && oh.diskType.IsDelta() && oh.content != nil {
 		w, err := p.storage.RawObjectWriter(oh.Type, oh.Size)
 		if err != nil {
 			return err
@@ -216,6 +219,7 @@ func (p *Parser) Parse() (plumbing.Hash, error) {
 			}
 
 		case FooterSection:
+			p.bytesRead = p.scanner.offset
 			p.checksum = data.Value().(plumbing.Hash)
 		}
 	}
@@ -243,6 +247,50 @@ func (p *Parser) Parse() (plumbing.Hash, error) {
 	}()
 
 	return p.checksum, p.onFooter(p.checksum)
+}
+
+// BytesRead is the encoded pack length, including its checksum, after framing.
+// It excludes trailing bytes and remains stable while delta resolution seeks.
+func (p *Parser) BytesRead() int64 { return p.bytesRead }
+
+func (p *Parser) streamDelta(oh *ObjectHeader) (err error) {
+	base, err := p.storage.EncodedObject(plumbing.AnyObject, oh.parent.Hash)
+	if err != nil {
+		return err
+	}
+	if p.maxObjectSize > 0 && base.Size() > p.maxObjectSize {
+		return ErrObjectTooLarge
+	}
+	if _, err = p.scanner.Seek(oh.ContentOffset, io.SeekStart); err != nil {
+		return err
+	}
+	compressed, err := sync.GetZlibReader(p.scanner.scannerReader)
+	if err != nil {
+		return err
+	}
+	defer sync.PutZlibReader(compressed)
+	oh.Type, oh.Size = base.Type(), oh.targetSize
+
+	writer, err := p.storage.RawObjectWriter(oh.Type, oh.Size)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, writer.Close()) }()
+	delta, err := ReaderFromDelta(base, compressed)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, delta.Close()) }()
+	hasher := plumbing.NewHasher(p.objectFormat, oh.Type, oh.Size)
+	n, err := ioutil.CopyBufferPool(io.MultiWriter(writer, hasher), delta)
+	if err != nil {
+		return err
+	}
+	if n != oh.Size {
+		return ErrInflatedSizeMismatch
+	}
+	oh.Hash = hasher.Sum()
+	return nil
 }
 
 func (p *Parser) ensureContent(oh *ObjectHeader) error {
@@ -436,7 +484,11 @@ func (p *Parser) processDelta(oh *ObjectHeader) error {
 		return err
 	}
 
-	if err := p.ensureContent(oh); err != nil {
+	if p.lowMemoryMode {
+		if err := p.streamDelta(oh); err != nil {
+			return err
+		}
+	} else if err := p.ensureContent(oh); err != nil {
 		return err
 	}
 
@@ -492,6 +544,9 @@ func (p *Parser) parentReader(parent *ObjectHeader) (io.ReaderAt, error) {
 	if p.storage != nil && !parent.Hash.IsZero() {
 		obj, err := p.storage.EncodedObject(parent.Type, parent.Hash)
 		if err == nil {
+			if p.maxObjectSize > 0 && obj.Size() > p.maxObjectSize {
+				return nil, ErrObjectTooLarge
+			}
 			// Ensure that external references have the correct type and size.
 			parent.Type = obj.Type()
 			parent.Size = obj.Size()

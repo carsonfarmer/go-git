@@ -108,6 +108,8 @@ func PatchDelta(src, delta []byte) ([]byte, error) {
 }
 
 // ReaderFromDelta returns a reader that applies a delta to a base object.
+// Close stops decoding and waits for the base reader to finish closing.
+// A blocked base read or Close can therefore delay it.
 func ReaderFromDelta(base plumbing.EncodedObject, deltaRC io.Reader) (io.ReadCloser, error) {
 	deltaBuf := bufio.NewReaderSize(deltaRC, 1024)
 	srcSz, err := packutil.DecodeLEB128FromReader(deltaBuf)
