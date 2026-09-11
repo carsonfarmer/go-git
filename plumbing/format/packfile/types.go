@@ -12,12 +12,13 @@ type Version uint32
 // Packfile versions.
 const (
 	V2 Version = 2
+	V3 Version = 3
 )
 
 // Supported returns true if the version is supported.
 func (v Version) Supported() bool {
 	switch v {
-	case V2:
+	case V2, V3:
 		return true
 	default:
 		return false

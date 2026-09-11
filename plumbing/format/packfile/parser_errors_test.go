@@ -126,3 +126,13 @@ func TestParserResolvesChildrenOfExternalBase(t *testing.T) {
 		})
 	}
 }
+
+func TestParserAcceptsPackVersion3(t *testing.T) {
+	t.Parallel()
+	packed := buildAlternatingDeltaChainPack(t, 0)
+	binary.BigEndian.PutUint32(packed[4:8], 3)
+	sum := sha1.Sum(packed[:len(packed)-sha1.Size])
+	copy(packed[len(packed)-sha1.Size:], sum[:])
+	_, err := packfile.NewParser(bytes.NewReader(packed)).Parse()
+	require.NoError(t, err)
+}
