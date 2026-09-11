@@ -368,8 +368,25 @@ func (p *Parser) resolveDeltas(ofsDeltas, refDeltas []*ObjectHeader) error {
 		if d.parent != nil {
 			continue
 		}
+		if p.storage != nil {
+			_, err := p.storage.EncodedObject(plumbing.AnyObject, d.Reference)
+			if errors.Is(err, plumbing.ErrObjectNotFound) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+		}
 		if err := p.processDelta(d); err != nil {
 			return fmt.Errorf("processing ref-delta at offset %v: %w", d.Offset, err)
+		}
+		if err := visit(d); err != nil {
+			return err
+		}
+	}
+	for _, d := range refDeltas {
+		if d.parent == nil {
+			return ErrReferenceDeltaNotFound
 		}
 	}
 

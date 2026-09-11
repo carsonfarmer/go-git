@@ -2,6 +2,8 @@ package packfile_test
 
 import (
 	"bytes"
+	"crypto/sha1"
+	"encoding/binary"
 	"errors"
 	"io"
 	"testing"
@@ -9,6 +11,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/format/packfile"
 	"github.com/go-git/go-git/v6/storage/memory"
+	gitbinary "github.com/go-git/go-git/v6/utils/binary"
 	"github.com/stretchr/testify/require"
 )
 
@@ -74,6 +77,52 @@ func TestParserPropagatesAdmissionAndStorageErrors(t *testing.T) {
 			storage := &closeFailureStorage{Storage: memory.NewStorage(), remaining: nth, failure: failure}
 			_, err := packfile.NewParser(bytes.NewReader(buildAlternatingDeltaChainPack(t, 1)), packfile.WithStorage(storage)).Parse()
 			require.ErrorIs(t, err, failure)
+		})
+	}
+}
+
+func TestParserResolvesChildrenOfExternalBase(t *testing.T) {
+	t.Parallel()
+	for _, forward := range []bool{false, true} {
+		t.Run(map[bool]string{false: "ofs child", true: "forward ref child"}[forward], func(t *testing.T) {
+			t.Parallel()
+			base, mid, leaf := []byte("abc"), []byte("ab"), []byte("a")
+			storage := memory.NewStorage()
+			w, err := storage.RawObjectWriter(plumbing.BlobObject, int64(len(base)))
+			require.NoError(t, err)
+			_, err = w.Write(base)
+			require.NoError(t, err)
+			require.NoError(t, w.Close())
+			var packed bytes.Buffer
+			digest := sha1.New()
+			out := io.MultiWriter(&packed, digest)
+			_, _ = out.Write([]byte("PACK"))
+			_ = binary.Write(out, binary.BigEndian, uint32(2))
+			_ = binary.Write(out, binary.BigEndian, uint32(2))
+			ref := func(base, target []byte) {
+				delta := packfile.DiffDelta(base, target)
+				writePackObjectHeader(t, out, plumbing.REFDeltaObject, int64(len(delta)))
+				hash := blobHash(base)
+				_, _ = hash.WriteTo(out)
+				writeZlibPayload(t, out, delta)
+			}
+			if forward {
+				ref(mid, leaf)
+				ref(base, mid)
+			} else {
+				offset := int64(packed.Len())
+				ref(base, mid)
+				delta := packfile.DiffDelta(mid, leaf)
+				distance := int64(packed.Len()) - offset
+				writePackObjectHeader(t, out, plumbing.OFSDeltaObject, int64(len(delta)))
+				require.NoError(t, gitbinary.WriteVariableWidthInt(out, distance))
+				writeZlibPayload(t, out, delta)
+			}
+			_, _ = packed.Write(digest.Sum(nil))
+			_, err = packfile.NewParser(bytes.NewReader(packed.Bytes()), packfile.WithStorage(storage)).Parse()
+			require.NoError(t, err)
+			_, err = storage.EncodedObject(plumbing.BlobObject, blobHash(leaf))
+			require.NoError(t, err)
 		})
 	}
 }
