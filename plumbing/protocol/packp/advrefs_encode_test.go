@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/suite"
 
 	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/format/config"
 	"github.com/go-git/go-git/v6/plumbing/format/pktline"
 	"github.com/go-git/go-git/v6/plumbing/protocol"
 	"github.com/go-git/go-git/v6/plumbing/protocol/capability"
@@ -76,6 +77,13 @@ func (s *AdvRefsEncodeSuite) TestCapsNoHead() {
 	)
 
 	testEncode(s, ar, expected)
+}
+
+func (s *AdvRefsEncodeSuite) TestCapsNoHeadSHA256() {
+	capabilities := capability.List{}
+	capabilities.Set(capability.ObjectFormat, config.SHA256.String())
+	expected := pktlines(s.T(), strings.Repeat("0", config.SHA256.HexSize())+" capabilities^{}\x00object-format=sha256\n", "")
+	testEncode(s, &AdvRefs{Capabilities: capabilities}, expected)
 }
 
 func (s *AdvRefsEncodeSuite) TestCapsWithHead() {
