@@ -170,10 +170,7 @@ func ReceivePack(
 		return fmt.Errorf("closing reader: %w", err)
 	}
 
-	// Report status if the client supports it
-	if !updreq.Capabilities.Supports(capability.ReportStatus) && !updreq.Capabilities.Supports(capability.ReportStatusV2) {
-		return unpackErr
-	}
+	reportStatus := updreq.Capabilities.Supports(capability.ReportStatus) || updreq.Capabilities.Supports(capability.ReportStatusV2)
 
 	var (
 		useSideband bool
@@ -196,6 +193,9 @@ func ReceivePack(
 
 	writeCloser := ioutil.NewWriteCloser(writer, w)
 	if unpackErr != nil {
+		if !reportStatus {
+			return unpackErr
+		}
 		res := sendReportStatus(writeCloser, unpackErr, nil)
 		_ = closeWriter(w)
 		return res
@@ -209,6 +209,9 @@ func ReceivePack(
 			Progress:    progress,
 		}
 		if hookErr := opts.Hooks.PreReceive(ctx, info); hookErr != nil {
+			if !reportStatus {
+				return hookErr
+			}
 			rejected := make(map[plumbing.ReferenceName]error, len(updreq.Commands))
 			for _, cmd := range updreq.Commands {
 				rejected[cmd.Name] = hookErr
@@ -248,6 +251,9 @@ func ReceivePack(
 			Progress:    progress,
 		}
 		_ = opts.Hooks.PostReceive(ctx, info)
+	}
+	if !reportStatus {
+		return firstErr
 	}
 
 	if err := sendReportStatus(writeCloser, firstErr, cmdStatus); err != nil {

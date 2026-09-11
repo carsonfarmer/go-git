@@ -79,6 +79,31 @@ func TestReceivePackNilHooksDeleteRef(t *testing.T) {
 	assert.ErrorIs(t, err, plumbing.ErrReferenceNotFound)
 }
 
+func TestReceivePackWithoutReportStatusUpdatesRef(t *testing.T) {
+	t.Parallel()
+
+	ref := plumbing.ReferenceName("refs/heads/main")
+	hash := plumbing.NewHash(receivePackTestHash)
+	st := seedRef(t, ref, hash)
+	req := &packp.UpdateRequests{Commands: []*packp.Command{deleteCmd(ref, hash)}}
+	var in, out bytes.Buffer
+	require.NoError(t, req.Encode(&in))
+
+	called := false
+	err := ReceivePack(context.Background(), st, io.NopCloser(&in), ioutil.WriteNopCloser(&out), &ReceivePackRequest{
+		StatelessRPC: true,
+		Hooks: ReceivePackHooks{PreReceive: func(context.Context, *PreReceiveInfo) error {
+			called = true
+			return nil
+		}},
+	})
+	require.NoError(t, err)
+	assert.True(t, called)
+	assert.Empty(t, out.Bytes())
+	_, err = st.Reference(ref)
+	assert.ErrorIs(t, err, plumbing.ErrReferenceNotFound)
+}
+
 func TestReceivePackPreReceiveAllowsUpdate(t *testing.T) {
 	t.Parallel()
 
