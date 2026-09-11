@@ -2,31 +2,39 @@ package packfile_test
 
 import (
 	"bytes"
+	"compress/zlib"
 	"crypto/sha1"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"io"
+	"runtime"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/format/packfile"
 	packutil "github.com/go-git/go-git/v6/plumbing/format/packfile/util"
 	"github.com/go-git/go-git/v6/storage/memory"
-	"github.com/stretchr/testify/require"
-	"io"
-	"runtime"
-	"testing"
 )
 
 type discardPackStorage struct {
 	*memory.Storage
-	base    plumbing.EncodedObject
-	failure error
-	largest int
+	base       plumbing.EncodedObject
+	failure    error
+	largest    int
+	writes     int
+	highMemory bool
 }
 
-func (s *discardPackStorage) LowMemoryMode() bool { return true }
+func (s *discardPackStorage) LowMemoryMode() bool { return !s.highMemory }
 func (s *discardPackStorage) EncodedObject(plumbing.ObjectType, plumbing.Hash) (plumbing.EncodedObject, error) {
 	return s.base, nil
 }
+
 func (s *discardPackStorage) RawObjectWriter(plumbing.ObjectType, int64) (io.WriteCloser, error) {
+	s.writes++
 	if s.failure != nil {
 		return nil, s.failure
 	}
@@ -140,4 +148,69 @@ func TestLowMemoryParserStreamsWrites(t *testing.T) {
 	require.NoError(t, err)
 	require.Positive(t, storage.largest)
 	require.LessOrEqual(t, storage.largest, 32<<10)
+}
+
+type objectAdmissionObserver struct {
+	rejectingObserver
+	check func(plumbing.ObjectType, int64, int64) error
+}
+
+func (o objectAdmissionObserver) OnInflatedObjectHeader(k plumbing.ObjectType, n, pos int64) error {
+	return o.check(k, n, pos)
+}
+
+func TestParserObjectAdmissionBeforeIO(t *testing.T) {
+	t.Parallel()
+	for _, high := range []bool{false, true} {
+		for _, delta := range []bool{false, true} {
+			t.Run(fmt.Sprintf("high=%v/delta=%v", high, delta), func(t *testing.T) {
+				t.Parallel()
+				base := &plumbing.MemoryObject{}
+				base.SetType(plumbing.BlobObject)
+				_, err := base.Write([]byte("abc"))
+				require.NoError(t, err)
+				counted := &countedDeltaBase{EncodedObject: base}
+				storage := &discardPackStorage{Storage: memory.NewStorage(), base: counted, highMemory: high}
+				packed := buildAlternatingDeltaChainPack(t, 0)
+				size := int64(len("benchmark base payload for the alternating delta chain"))
+				if delta {
+					packed = thinDeltaPack(t, base.Hash(), packfile.DiffDelta([]byte("abc"), []byte("ab")))
+					size = 2
+				}
+				rejected := errors.New("metadata rejected")
+				calls := 0
+				observer := objectAdmissionObserver{check: func(k plumbing.ObjectType, n, pos int64) error {
+					calls++
+					require.Equal(t, plumbing.BlobObject, k)
+					require.Equal(t, size, n)
+					require.Equal(t, int64(12), pos)
+					return rejected
+				}}
+				_, err = packfile.NewParser(bytes.NewReader(packed), packfile.WithStorage(storage), packfile.WithScannerObservers(&observer)).Parse()
+				require.ErrorIs(t, err, rejected)
+				require.Equal(t, 1, calls)
+				require.Zero(t, storage.writes)
+				require.Zero(t, counted.opens)
+			})
+		}
+	}
+}
+
+func TestParserRejectsDeltaZlibChecksum(t *testing.T) {
+	t.Parallel()
+	base := &plumbing.MemoryObject{}
+	base.SetType(plumbing.BlobObject)
+	w, err := base.Writer()
+	require.NoError(t, err)
+	_, err = w.Write([]byte("abc"))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	packed := thinDeltaPack(t, base.Hash(), []byte{3, 1, 0x90, 1})
+	packed[len(packed)-sha1.Size-1] ^= 1
+	digest := sha1.Sum(packed[:len(packed)-sha1.Size])
+	copy(packed[len(packed)-sha1.Size:], digest[:])
+	storage := &discardPackStorage{Storage: memory.NewStorage(), base: base}
+	_, err = packfile.NewParser(bytes.NewReader(packed), packfile.WithStorage(storage)).Parse()
+	require.ErrorIs(t, err, zlib.ErrChecksum)
+	require.Zero(t, storage.writes)
 }

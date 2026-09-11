@@ -8,11 +8,12 @@ import (
 	"io"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/format/packfile"
 	"github.com/go-git/go-git/v6/storage/memory"
 	gitbinary "github.com/go-git/go-git/v6/utils/binary"
-	"github.com/stretchr/testify/require"
 )
 
 type rejectingObserver struct {
@@ -26,6 +27,7 @@ func (o *rejectingObserver) OnHeader(uint32) error {
 	}
 	return nil
 }
+
 func (o *rejectingObserver) OnInflatedObjectContent(plumbing.Hash, int64, uint32, []byte) error {
 	return o.failure
 }

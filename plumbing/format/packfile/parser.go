@@ -113,6 +113,7 @@ func NewParser(data io.Reader, opts ...ParserOption) *Parser {
 
 	p.scanner = NewScanner(data, sopts...)
 	p.scanner.maxObjectSize = p.maxObjectSize
+	p.scanner.onObjectHeader = p.onInflatedObjectHeader
 
 	if p.storage != nil {
 		p.scanner.storage = p.storage
@@ -157,10 +158,6 @@ func (p *Parser) storeOrCache(oh *ObjectHeader) error {
 			o = o.parent
 		}
 		p.cache.Add(oh)
-	}
-
-	if err := p.onInflatedObjectHeader(oh.Type, oh.Size, oh.Offset); err != nil {
-		return err
 	}
 
 	return p.onInflatedObjectContent(oh.Hash, oh.Offset, oh.Crc32, nil)
@@ -484,6 +481,16 @@ func (p *Parser) processDelta(oh *ObjectHeader) error {
 		return err
 	}
 
+	if oh.parent.externalRef && p.storage != nil {
+		base, err := p.storage.EncodedObject(plumbing.AnyObject, oh.parent.Hash)
+		if err != nil {
+			return err
+		}
+		oh.parent.Type, oh.parent.Size = base.Type(), base.Size()
+	}
+	if err := p.onInflatedObjectHeader(oh.parent.Type, oh.targetSize, oh.Offset); err != nil {
+		return err
+	}
 	if p.lowMemoryMode {
 		if err := p.streamDelta(oh); err != nil {
 			return err

@@ -8,7 +8,8 @@ import (
 type Observer interface {
 	// OnHeader is called when a new packfile is opened.
 	OnHeader(count uint32) error
-	// OnInflatedObjectHeader is called for each object header read.
+	// OnInflatedObjectHeader is called once with the resolved type and decoded
+	// size, before the object is written or reconstructed.
 	OnInflatedObjectHeader(t plumbing.ObjectType, objSize, pos int64) error
 	// OnInflatedObjectContent is called for each decoded object.
 	OnInflatedObjectContent(h plumbing.Hash, pos int64, crc uint32, content []byte) error

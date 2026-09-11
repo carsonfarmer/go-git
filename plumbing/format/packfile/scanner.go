@@ -189,8 +189,9 @@ type Scanner struct {
 	*scannerReader
 	rbuf *bufio.Reader
 
-	maxObjectSize int64
-	lowMemoryMode bool
+	onObjectHeader func(plumbing.ObjectType, int64, int64) error
+	maxObjectSize  int64
+	lowMemoryMode  bool
 }
 
 // NewScanner creates a new instance of Scanner.
@@ -505,6 +506,11 @@ func objectEntry(r *Scanner) (_ stateFn, result error) {
 	}
 
 	oh.ContentOffset = r.offset
+	if !oh.Type.IsDelta() && r.onObjectHeader != nil {
+		if err := r.onObjectHeader(oh.Type, oh.Size, oh.Offset); err != nil {
+			return nil, err
+		}
+	}
 
 	zr, err := gogitsync.GetZlibReader(r.scannerReader)
 	if err != nil {
@@ -542,7 +548,7 @@ func objectEntry(r *Scanner) (_ stateFn, result error) {
 	// the resolved object.
 
 	bounded := &boundedWriter{w: mw, limit: oh.Size}
-	if oh.Type.IsDelta() && (r.lowMemoryMode || r.maxObjectSize > 0) {
+	if oh.Type.IsDelta() && r.onObjectHeader != nil {
 		delta := bufio.NewReader(io.TeeReader(zr, bounded))
 		sourceSize, err := packutil.DecodeLEB128FromReader(delta)
 		if err != nil {
@@ -564,7 +570,9 @@ func objectEntry(r *Scanner) (_ stateFn, result error) {
 		if oh.targetSize <= (math.MaxInt64-20)/8 && oh.Size > oh.targetSize*8+20 {
 			return nil, ErrInvalidDelta
 		}
-		_, err = ioutil.CopyBufferPool(io.Discard, delta)
+		if _, err := ioutil.CopyBufferPool(io.Discard, delta); err != nil {
+			return nil, err
+		}
 	} else {
 		_, err = ioutil.CopyBufferPool(bounded, zr)
 	}
