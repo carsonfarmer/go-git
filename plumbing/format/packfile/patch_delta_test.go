@@ -294,3 +294,37 @@ func (o *reopenFailureObject) Reader() (io.ReadCloser, error) {
 	o.opened = true
 	return o.EncodedObject.Reader()
 }
+
+func TestDeltaReaderCloseWaitsForBase(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		defer close(release)
+		base := &closingObject{EncodedObject: &plumbing.MemoryObject{}, closeFn: func() error { <-release; return nil }}
+		r, err := ReaderFromDelta(base, bytes.NewReader(buildDelta(0, 0)))
+		require.NoError(t, err)
+		_, err = io.ReadAll(r)
+		require.NoError(t, err)
+		closed := make(chan struct{})
+		go func() { _ = r.Close(); close(closed) }()
+		synctest.Wait()
+		select {
+		case <-closed:
+			t.Fatal("Close returned before base cleanup")
+		default:
+		}
+	})
+}
+
+type closingObject struct {
+	plumbing.EncodedObject
+	closeFn func() error
+}
+
+func (o *closingObject) Reader() (io.ReadCloser, error) {
+	r, err := o.EncodedObject.Reader()
+	if err != nil {
+		return nil, err
+	}
+	return readCloserFn{Reader: r, closeFn: func() error { _ = r.Close(); return o.closeFn() }}, nil
+}

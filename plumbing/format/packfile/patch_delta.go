@@ -131,8 +131,10 @@ func ReaderFromDelta(base plumbing.EncodedObject, deltaRC io.Reader) (io.ReadClo
 	remainingTargetSz := targetSz
 
 	dstRd, dstWr := io.Pipe()
+	done := make(chan struct{})
 
 	go func() {
+		defer close(done)
 		baseRd, err := base.Reader()
 		if err != nil {
 			_ = dstWr.CloseWithError(ErrInvalidDelta)
@@ -246,7 +248,19 @@ func ReaderFromDelta(base plumbing.EncodedObject, deltaRC io.Reader) (io.ReadClo
 		_ = dstWr.Close()
 	}()
 
-	return dstRd, nil
+	return &deltaReader{ReadCloser: dstRd, done: done}, nil
+}
+
+// Close stops decoding and waits until the base reader has been released.
+type deltaReader struct {
+	io.ReadCloser
+	done <-chan struct{}
+}
+
+func (r *deltaReader) Close() error {
+	err := r.ReadCloser.Close()
+	<-r.done
+	return err
 }
 
 func patchDelta(dst *bytes.Buffer, src, delta []byte) error {
