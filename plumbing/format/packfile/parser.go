@@ -136,10 +136,8 @@ func (p *Parser) storeOrCache(oh *ObjectHeader) error {
 			return err
 		}
 
-		defer func() { _ = w.Close() }()
-
 		_, err = ioutil.CopyBufferPool(w, oh.content)
-		if err != nil {
+		if err = errors.Join(err, w.Close()); err != nil {
 			return err
 		}
 	}
@@ -190,8 +188,10 @@ func (p *Parser) Parse() (plumbing.Hash, error) {
 		case HeaderSection:
 			header := data.Value().(Header)
 
+			if err := p.onHeader(header.ObjectsQty); err != nil {
+				return plumbing.ZeroHash, err
+			}
 			p.resetCache(int(header.ObjectsQty))
-			_ = p.onHeader(header.ObjectsQty)
 
 		case ObjectSection:
 			oh := data.Value().(ObjectHeader)
@@ -211,7 +211,9 @@ func (p *Parser) Parse() (plumbing.Hash, error) {
 				oh.content = nil
 			}
 
-			_ = p.storeOrCache(&oh)
+			if err := p.storeOrCache(&oh); err != nil {
+				return plumbing.ZeroHash, err
+			}
 
 		case FooterSection:
 			p.checksum = data.Value().(plumbing.Hash)

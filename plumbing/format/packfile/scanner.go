@@ -432,7 +432,7 @@ func packObjectsQty(r *Scanner) (stateFn, error) {
 // [ErrMalformedPackfile] is returned.
 //
 // When SHA256 is enabled, the scanner will also calculate the SHA256 for each object.
-func objectEntry(r *Scanner) (stateFn, error) {
+func objectEntry(r *Scanner) (_ stateFn, result error) {
 	if r.objIndex+1 >= int(r.objects) {
 		return packFooter, nil
 	}
@@ -512,7 +512,7 @@ func objectEntry(r *Scanner) (stateFn, error) {
 				return nil, err
 			}
 
-			defer func() { _ = w.Close() }()
+			defer func() { result = errors.Join(result, w.Close()) }()
 			mw = io.MultiWriter(r.hasher, w)
 		}
 	}
