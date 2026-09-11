@@ -3,8 +3,10 @@ package transport
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/format/packfile"
@@ -18,11 +20,18 @@ import (
 	"github.com/go-git/go-git/v6/utils/ioutil"
 )
 
+// ErrUpdateRequestTooLarge reports a receive-pack command section larger than
+// ReceivePackRequest.MaxCommandBytes.
+var ErrUpdateRequestTooLarge = errors.New("receive-pack command section exceeds configured limit")
+
 // ReceivePackRequest is a set of options for the ReceivePack service.
 type ReceivePackRequest struct {
 	GitProtocol   string
 	AdvertiseRefs bool
 	StatelessRPC  bool
+	// MaxCommandBytes limits the update commands and capabilities. Zero leaves
+	// them unlimited; the packfile is never charged to this limit.
+	MaxCommandBytes int64
 
 	// Hooks are optional server-side callbacks. The zero value installs none.
 	Hooks ReceivePackHooks
@@ -133,9 +142,24 @@ func ReceivePack(
 		return nil
 	}
 
+	commandReader := io.Reader(rd)
+	var limited *io.LimitedReader
+	if opts.MaxCommandBytes > 0 && opts.MaxCommandBytes < math.MaxInt64 {
+		limited = &io.LimitedReader{R: rd, N: opts.MaxCommandBytes + 1}
+		commandReader = limited
+	}
 	updreq := &packp.UpdateRequests{}
-	if err := updreq.Decode(rd); err != nil {
+	if err := updreq.Decode(commandReader); err != nil {
+		if limited != nil && limited.N == 0 {
+			return ErrUpdateRequestTooLarge
+		}
 		return err
+	}
+	if limited != nil && limited.N == 0 {
+		return ErrUpdateRequestTooLarge
+	}
+	if len(updreq.Commands) == 0 {
+		return nil
 	}
 
 	var (
@@ -194,11 +218,17 @@ func ReceivePack(
 	writeCloser := ioutil.NewWriteCloser(writer, w)
 	if unpackErr != nil {
 		if !reportStatus {
+			if err := flushSideband(w, useSideband); err != nil {
+				return err
+			}
 			return unpackErr
 		}
-		res := sendReportStatus(writeCloser, unpackErr, nil)
+		result := sendReportStatus(writeCloser, unpackErr, nil)
+		if result == nil {
+			result = flushSideband(w, useSideband)
+		}
 		_ = closeWriter(w)
-		return res
+		return result
 	}
 
 	if opts.Hooks.PreReceive != nil {
@@ -210,6 +240,9 @@ func ReceivePack(
 		}
 		if hookErr := opts.Hooks.PreReceive(ctx, info); hookErr != nil {
 			if !reportStatus {
+				if err := flushSideband(w, useSideband); err != nil {
+					return err
+				}
 				return hookErr
 			}
 			rejected := make(map[plumbing.ReferenceName]error, len(updreq.Commands))
@@ -220,11 +253,9 @@ func ReceivePack(
 				_ = closeWriter(w)
 				return err
 			}
-			if useSideband {
-				if err := pktline.WriteFlush(w); err != nil {
-					_ = closeWriter(w)
-					return fmt.Errorf("flushing sideband: %w", err)
-				}
+			if err := flushSideband(w, useSideband); err != nil {
+				_ = closeWriter(w)
+				return err
 			}
 			if err := closeWriter(w); err != nil {
 				return err
@@ -253,17 +284,17 @@ func ReceivePack(
 		_ = opts.Hooks.PostReceive(ctx, info)
 	}
 	if !reportStatus {
+		if err := flushSideband(w, useSideband); err != nil {
+			return err
+		}
 		return firstErr
 	}
 
 	if err := sendReportStatus(writeCloser, firstErr, cmdStatus); err != nil {
 		return err
 	}
-
-	if useSideband {
-		if err := pktline.WriteFlush(w); err != nil {
-			return fmt.Errorf("flushing sideband: %w", err)
-		}
+	if err := flushSideband(w, useSideband); err != nil {
+		return err
 	}
 	if firstErr != nil {
 		return firstErr
@@ -280,6 +311,16 @@ func (p sidebandProgress) Write(b []byte) (int, error) {
 func closeWriter(w io.WriteCloser) error {
 	if err := w.Close(); err != nil {
 		return fmt.Errorf("closing writer: %w", err)
+	}
+	return nil
+}
+
+func flushSideband(w io.Writer, useSideband bool) error {
+	if !useSideband {
+		return nil
+	}
+	if err := pktline.WriteFlush(w); err != nil {
+		return fmt.Errorf("flushing sideband: %w", err)
 	}
 	return nil
 }

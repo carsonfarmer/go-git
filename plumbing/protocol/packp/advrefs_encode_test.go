@@ -86,6 +86,17 @@ func (s *AdvRefsEncodeSuite) TestCapsNoHeadSHA256() {
 	testEncode(s, &AdvRefs{Capabilities: capabilities}, expected)
 }
 
+func (s *AdvRefsEncodeSuite) TestCapsNoHeadUsesFirstObjectFormat() {
+	capabilities := capability.List{}
+	capabilities.Add(capability.ObjectFormat, config.SHA1.String(), config.SHA256.String())
+	expected := pktlines(s.T(), plumbing.ZeroHash.String()+" capabilities^{}\x00object-format=sha1 object-format=sha256\n", "")
+	testEncode(s, &AdvRefs{Capabilities: capabilities}, expected)
+
+	capabilities.Set(capability.ObjectFormat, config.SHA256.String(), config.SHA1.String())
+	expected = pktlines(s.T(), strings.Repeat("0", config.SHA256.HexSize())+" capabilities^{}\x00object-format=sha256 object-format=sha1\n", "")
+	testEncode(s, &AdvRefs{Capabilities: capabilities}, expected)
+}
+
 func (s *AdvRefsEncodeSuite) TestCapsWithHead() {
 	hash := plumbing.NewHash("6ecf0ef2c2dffb796033e5a02219af86ec6584e5")
 	capabilities := capability.List{}

@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/format/pktline"
 	"github.com/go-git/go-git/v6/plumbing/protocol/capability"
 	"github.com/go-git/go-git/v6/plumbing/protocol/packp"
 	"github.com/go-git/go-git/v6/plumbing/protocol/packp/sideband"
@@ -85,12 +86,58 @@ func TestReceivePackWithoutReportStatusUpdatesRef(t *testing.T) {
 	ref := plumbing.ReferenceName("refs/heads/main")
 	hash := plumbing.NewHash(receivePackTestHash)
 	st := seedRef(t, ref, hash)
-	req := &packp.UpdateRequests{Commands: []*packp.Command{deleteCmd(ref, hash)}}
+	caps := capability.List{}
+	caps.Add(capability.Sideband64k)
+	req := &packp.UpdateRequests{
+		Capabilities: caps,
+		Commands:     []*packp.Command{deleteCmd(ref, hash)},
+	}
 	var in, out bytes.Buffer
 	require.NoError(t, req.Encode(&in))
 
 	called := false
 	err := ReceivePack(context.Background(), st, io.NopCloser(&in), ioutil.WriteNopCloser(&out), &ReceivePackRequest{
+		StatelessRPC: true,
+		Hooks: ReceivePackHooks{PreReceive: func(_ context.Context, info *PreReceiveInfo) error {
+			called = true
+			_, _ = io.WriteString(info.Progress, "updating ref\n")
+			return nil
+		}},
+	})
+	require.NoError(t, err)
+	assert.True(t, called)
+	assert.True(t, bytes.HasSuffix(out.Bytes(), []byte("0000")), "sideband response must end with a flush packet")
+	demuxed := readSideband(t, &out)
+	assert.Contains(t, demuxed.progress.String(), "updating ref")
+	assert.Empty(t, demuxed.data.Bytes())
+	_, err = st.Reference(ref)
+	assert.ErrorIs(t, err, plumbing.ErrReferenceNotFound)
+}
+
+func TestReceivePackCommandLimit(t *testing.T) {
+	t.Parallel()
+
+	ref := plumbing.ReferenceName("refs/heads/main")
+	hash := plumbing.NewHash(receivePackTestHash)
+	request := receivePackRequest(t, []*packp.Command{deleteCmd(ref, hash)})
+	body, err := io.ReadAll(request)
+	require.NoError(t, err)
+	err = ReceivePack(context.Background(), nil, io.NopCloser(bytes.NewReader(body)), ioutil.WriteNopCloser(io.Discard), &ReceivePackRequest{
+		StatelessRPC:    true,
+		MaxCommandBytes: int64(len(body) - 1),
+	})
+	assert.ErrorIs(t, err, ErrUpdateRequestTooLarge)
+}
+
+func TestReceivePackShallowOnlyDoesNotRunHooks(t *testing.T) {
+	t.Parallel()
+
+	var body bytes.Buffer
+	_, err := pktline.Writef(&body, "shallow %s\n", receivePackTestHash)
+	require.NoError(t, err)
+	require.NoError(t, pktline.WriteFlush(&body))
+	called := false
+	err = ReceivePack(context.Background(), nil, io.NopCloser(&body), ioutil.WriteNopCloser(io.Discard), &ReceivePackRequest{
 		StatelessRPC: true,
 		Hooks: ReceivePackHooks{PreReceive: func(context.Context, *PreReceiveInfo) error {
 			called = true
@@ -98,10 +145,40 @@ func TestReceivePackWithoutReportStatusUpdatesRef(t *testing.T) {
 		}},
 	})
 	require.NoError(t, err)
-	assert.True(t, called)
-	assert.Empty(t, out.Bytes())
-	_, err = st.Reference(ref)
-	assert.ErrorIs(t, err, plumbing.ErrReferenceNotFound)
+	assert.False(t, called)
+}
+
+func TestReceivePackWithoutReportStatusFlushesRejectedSideband(t *testing.T) {
+	t.Parallel()
+
+	ref := plumbing.ReferenceName("refs/heads/main")
+	hash := plumbing.NewHash(receivePackTestHash)
+	st := seedRef(t, ref, hash)
+	caps := capability.List{}
+	caps.Add(capability.Sideband64k)
+	req := &packp.UpdateRequests{
+		Capabilities: caps,
+		Commands:     []*packp.Command{deleteCmd(ref, hash)},
+	}
+	var in, out bytes.Buffer
+	require.NoError(t, req.Encode(&in))
+
+	wantErr := errors.New("policy blocks main")
+	err := ReceivePack(context.Background(), st, io.NopCloser(&in), ioutil.WriteNopCloser(&out), &ReceivePackRequest{
+		StatelessRPC: true,
+		Hooks: ReceivePackHooks{PreReceive: func(_ context.Context, info *PreReceiveInfo) error {
+			_, _ = io.WriteString(info.Progress, "ref rejected\n")
+			return wantErr
+		}},
+	})
+	require.ErrorIs(t, err, wantErr)
+	assert.True(t, bytes.HasSuffix(out.Bytes(), []byte("0000")), "sideband response must end with a flush packet")
+	demuxed := readSideband(t, &out)
+	assert.Contains(t, demuxed.progress.String(), "ref rejected")
+	assert.Empty(t, demuxed.data.Bytes())
+	got, err := st.Reference(ref)
+	require.NoError(t, err)
+	assert.Equal(t, hash, got.Hash())
 }
 
 func TestReceivePackPreReceiveAllowsUpdate(t *testing.T) {

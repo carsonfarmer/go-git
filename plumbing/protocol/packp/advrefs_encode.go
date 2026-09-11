@@ -37,10 +37,9 @@ func (a *AdvRefs) Encode(w io.Writer) error {
 	if firstName == "" {
 		// No refs: zero-id capabilities^{}
 		zero := plumbing.ZeroHash.String()
-		for _, format := range a.Capabilities.Get(capability.ObjectFormat) {
-			if format == config.SHA256.String() {
-				zero = strings.Repeat("0", config.SHA256.HexSize())
-			}
+		formats := a.Capabilities.Get(capability.ObjectFormat)
+		if len(formats) > 0 && formats[0] == config.SHA256.String() {
+			zero = strings.Repeat("0", config.SHA256.HexSize())
 		}
 		firstLine := fmt.Sprintf("%s %s\x00%s\n",
 			zero, "capabilities^{}", caps)
